@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wildfire Smog Map</title>
+
+  <!-- Leaflet = the map library (needs an internet connection) -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; margin: 20px; }
+    #map { width: 100%; max-width: 600px; height: 400px; margin: 20px auto; border: 2px solid #333; }
+    .red { color: red; }
+    .green { color: green; }
+  </style>
+</head>
+<body>
+  <h1>Wildfire Smog Map</h1>
+  <p><span class="red">&#9679;</span> High smog &nbsp;&nbsp; <span class="green">&#9679;</span> Air OK</p>
+
+  <div id="map"></div>
+  <p id="status">Loading...</p>
+
+  <script>
+    // Create the map
+    const map = L.map("map").setView([-2.5, 115], 6);
+
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 18,
+      attribution: "&copy; OpenStreetMap contributors"
+    }).addTo(map);
+
+    // One layer that holds all the regions, so we can clear and redraw it
+    const shapes = L.featureGroup().addTo(map);
+    let firstLoad = true;
+
+    async function loadData() {
+      try {
+        const response = await fetch("/data");
+        const regions = await response.json();
+
+        shapes.clearLayers();
+
+        regions.forEach(function (r) {
+          const color = r.high ? "red" : "green";   // app.py decides which are high
+          const popup = "<b>" + r.name + "</b><br>AQI: " + r.aqi;
+
+          // Polygon = straight lines between the corner points
+          const area = L.polygon(r.polygon, {
+            color: color,
+            weight: 3,
+            fillColor: color,
+            fillOpacity: 0.4
+          }).bindPopup(popup).addTo(shapes);
+
+          // Pin in the middle of the high-smog regions
+          if (r.high) {
+            L.marker(area.getBounds().getCenter()).bindPopup(popup).addTo(shapes);
+          }
+        });
+
+        // Zoom the map to fit all regions (only the first time)
+        if (firstLoad && regions.length > 0) {
+          map.fitBounds(shapes.getBounds(), { padding: [20, 20] });
+          firstLoad = false;
+        }
+
+        document.getElementById("status").textContent =
+          "Last updated: " + new Date().toLocaleTimeString();
+      } catch (error) {
+        document.getElementById("status").textContent =
+          "Could not load data. Is app.py running?";
+      }
+    }
+
+    loadData();
+    setInterval(loadData, 5000);   // refresh every 5 seconds
+  </script>
+</body>
+</html>
