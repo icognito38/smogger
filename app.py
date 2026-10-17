@@ -3,7 +3,7 @@ import streamlit as st
 from folium.plugins import HeatMap
 from math import asin, cos, radians, sin, sqrt
 from streamlit_folium import st_folium
-from streamlit_geolocation import streamlit_geolocation
+from streamlit_js_eval import get_geolocation, streamlit_js_eval
 
 st.set_page_config(page_title="Wildfire & Smog Intelligence Platform", layout="wide")
 
@@ -49,9 +49,11 @@ header[data-testid="stHeader"], footer { display:none; }
 .panel ul { margin:0 0 0 1.1rem; padding:0; font-size:.84rem; } .panel li { margin-bottom:3px; }
 .sys { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:6px; }
 .sys .card { border-top-width:2px; padding:5px 10px; } .sys .v { font-size:1rem; }
+/* hide the helper iframes (geolocation / permission probes); they still run */
+[data-testid="stElementContainer"]:has(iframe[title^="streamlit_js_eval"]) { display:none; }
 /* vertical fill: iframe + advisory pane track the viewport height */
 iframe[title="streamlit_folium.st_folium"] { height:calc(100vh - var(--top) - var(--radio)) !important; min-height:380px; border:1px solid var(--line); display:block; }
-[data-testid="stLayoutWrapper"]:has(> .st-key-rightcol) { height:calc(100vh - var(--top) + 4px); min-height:420px; }
+[data-testid="stLayoutWrapper"]:has(> .st-key-rightcol) { height:calc(100vh - var(--top) - 4px); margin-top:8px; min-height:420px; }
 .st-key-rightcol { height:100% !important; display:flex; flex-direction:column; gap:.5rem; }
 .st-key-rightcol > [data-testid="stLayoutWrapper"] { flex:1 1 0; min-height:0; display:flex; flex-direction:column; }
 .st-key-advisory { flex:1 1 0; height:auto !important; min-height:0; overflow-y:auto; border:1px solid var(--line); background:var(--panel); padding:10px 12px 4px 12px; }
@@ -159,12 +161,13 @@ def in_poly(pt, poly):
     return inside
 
 
-def location_alert(user, h, src):
-    """(css class, icon text, title, body) for the active test location at forecast hour h."""
+def location_alert(user, h, geo_state):
+    """(css class, icon text, title, body) for the active location at forecast hour h."""
     if user is None:
-        hint = ("Allow location access in your browser." if src.startswith("Auto")
-                else "Click anywhere on the map to place a test location.")
-        return "", "?", "Awaiting Location", hint
+        if geo_state == "pending":
+            return "", "?", "Requesting Location", "Allow location access in the browser prompt. You can also click the map to test a point."
+        note = "Device GPS is blocked or unavailable. " if st.session_state.get("fell_back") else ""
+        return "", "?", "Awaiting Location", note + "Click anywhere on the map to test a location."
     dist = km_between(user, IGNITION)
     if h and in_poly(user, plume(h)):
         return "crit", "!", "Danger: Inside Smoke Plume", (
@@ -208,13 +211,44 @@ left, right = st.columns([2, 1])
 rc = right.container(key="rightcol")
 
 with rc:
-    src = st.radio("Test location source", ["Auto-detect Device GPS", "Click on Map to Test Location"],
-                   horizontal=True, key="locsrc")
-    if src.startswith("Auto"):
-        g = streamlit_geolocation()
-        user = (g["latitude"], g["longitude"]) if g and g.get("latitude") is not None else None
-    else:
-        user = st.session_state.get("click_loc")
+    # Permission state is re-read when the forecast hour changes; a switch to "granted" re-requests GPS.
+    perm = streamlit_js_eval(
+        js_expressions="(navigator.permissions ? navigator.permissions.query({name:'geolocation'}).then(r => r.state) : Promise.resolve('unknown'))",
+        key=f"perm_{h}",
+    )
+    prev = st.session_state.get("perm_last")
+    if perm and perm != prev:
+        st.session_state.perm_last = perm
+        if perm == "granted" and prev is not None:  # permission changed: drop map override, ask GPS again
+            st.session_state.geo_n = st.session_state.get("geo_n", 0) + 1
+            st.session_state.pop("click_loc", None)
+            st.session_state.pop("gps_loc", None)
+            st.session_state.fell_back = False
+            st.session_state.locsrc = "Auto-detect Device GPS"
+    geo = get_geolocation(component_key=f"geo_{st.session_state.get('geo_n', 0)}")  # prompts on first load
+    if geo and "coords" in geo:
+        st.session_state.gps_loc = (geo["coords"]["latitude"], geo["coords"]["longitude"])
+    elif geo and "error" in geo:
+        st.session_state.gps_loc = None
+    if st.session_state.get("locsrc") is None:
+        st.session_state.locsrc = "Auto-detect Device GPS"
+    # Fallback: GPS denied/unavailable -> switch the toggle to map clicks (before the radio is created)
+    if geo and "error" in geo and not st.session_state.get("fell_back"):
+        st.session_state.fell_back = True
+        st.session_state.locsrc = "Click on Map to Test Location"
+    src = st.radio("Test location source", ["Auto-detect Device GPS", "Click on Map to Test Location"], horizontal=True, key="locsrc")
+    if src.startswith("Auto") and st.session_state.get("prev_src", "").startswith("Click"):
+        # switched back to auto-detect: re-request browser geolocation, no button needed
+        st.session_state.geo_n = st.session_state.get("geo_n", 0) + 1
+        st.session_state.fell_back = False
+        st.session_state.pop("gps_loc", None)
+        st.session_state.prev_src = src
+        st.rerun()
+    st.session_state.prev_src = src
+    gps = None if st.session_state.get("perm_last") == "denied" else st.session_state.get("gps_loc")
+    click = st.session_state.get("click_loc")
+    user = click if src.startswith("Click") else gps
+    geo_state = "pending" if src.startswith("Auto") and geo is None else "done"
     alert_slot = st.empty()  # filled after the map so a fresh click is already known
 
 with left:
@@ -248,11 +282,13 @@ with left:
         ).add_to(m)
     res = st_folium(m, use_container_width=True, height=560, returned_objects=["last_clicked"], key="map")
     c = (res or {}).get("last_clicked")
-    if src.startswith("Click") and c and (c["lat"], c["lng"]) != st.session_state.get("click_loc"):
+    if c and src.startswith("Click") and (c["lat"], c["lng"]) != st.session_state.get("click_loc"):
         st.session_state.click_loc = (c["lat"], c["lng"])
         st.rerun()
 
-acls, icon, atitle, abody = location_alert(user, h, src)
+acls, icon, atitle, abody = location_alert(user, h, geo_state)
+if user:
+    abody += f'<div style="opacity:.7;margin-top:4px;font-size:.78rem">Location source: {"Map click" if src.startswith("Click") else "Device GPS"}</div>'
 alert_slot.markdown(
     f'<div class="alert {acls}"><div class="ic">{icon}</div><div><div class="t">{atitle}</div><div class="b">{abody}</div></div></div>',
     unsafe_allow_html=True,
