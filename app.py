@@ -66,29 +66,69 @@ div[data-testid="stSlider"] label p, .stButton button { font-size:.78rem; text-t
     unsafe_allow_html=True,
 )
 
-IGNITION = (37.8044, -122.4500)
-OAKRIDGE = (37.7450, -122.3850)
-HECTARES = [0, 6, 14, 24, 33, 40, 45]
-PM25 = [12, 95, 180, 260, 340, 410, 480]  # ug/m3
-REACH_KM = [0, 2.0, 3.9, 5.8, 7.6, 9.0, 10.2]  # plume leading edge; Oakridge is ~8.7 km out
-WIND = [28, 28, 30, 31, 29, 28, 27]
-WIND_DIR = ["NW", "NW", "NW", "NW", "NNW", "NW", "NW"]
-ZONE = [
-    "Ignition origin only. No smoke plume projected.",
-    "Plume confined to the North Hills ridge corridor (Sector 4).",
-    "Plume crossing the southern boundary of Sector 4.",
-    "Plume over the Marlow Heights residential corridor.",
-    "Plume 1 km from the Oakridge District boundary.",
-    "Leading edge has entered the Oakridge District.",
-    "Oakridge District fully within the plume; spreading toward the bay shoreline.",
+# ---------- active fires (mock data; replace with model output) ----------
+# Hourly series are the fire's peak values scaled by a shared growth curve.
+HA_S = [0, .13, .31, .53, .73, .89, 1]
+PM_S = [.025, .2, .375, .54, .71, .85, 1]
+RE_S = [0, .2, .38, .57, .75, .88, 1]
+WIND_S = [0, 0, 2, 3, 1, 0, -1]
+FIRES = [
+    dict(name="Sector 4 - North Hills", short="Sector 4", origin=(37.8044, -122.4500), target=(37.7450, -122.3850),
+         target_name="Oakridge District", ha=45, pm=480, reach=10.2, wind=28, wdir="NW", walt="NNW",
+         sev="High Risk", cls="crit", color="red", staging="North Ridge access road staging area",
+         helibase="Sector 4 helibase", route="Route 9 southbound", hospital="Oakridge Community Hospital",
+         avoid="Ridge Road", nearby="Marlow Heights"),
+    dict(name="East Bay Ridge Corridor", short="East Bay Ridge", origin=(37.8350, -122.2100), target=(37.8030, -122.2700),
+         target_name="Lakeshore Flats", ha=78, pm=560, reach=9.5, wind=34, wdir="E", walt="ENE",
+         sev="Extreme Risk", cls="crit", color="darkred", staging="Grizzly Peak staging area",
+         helibase="Ridge Corridor helibase", route="Route 24 westbound", hospital="Lakeshore Medical Center",
+         avoid="Skyline Spur Road", nearby="Hillcrest Terrace"),
+    dict(name="Skyline Boulevard", short="Skyline Blvd", origin=(37.6800, -122.4900), target=(37.7200, -122.4300),
+         target_name="Bayview Heights", ha=22, pm=310, reach=8.0, wind=21, wdir="SW", walt="WSW",
+         sev="Moderate Risk", cls="warn", color="orange", staging="Skyline summit staging area",
+         helibase="Skyline helibase", route="Route 1 northbound", hospital="Bayview Heights Clinic",
+         avoid="Skyline Boulevard", nearby="Crestmoor"),
 ]
+FIRE_BY_NAME = {f["name"]: f for f in FIRES}
+
+
+def km_between(a, b):
+    la1, lo1, la2, lo2 = map(radians, (*a, *b))
+    x = sin((la2 - la1) / 2) ** 2 + cos(la1) * cos(la2) * sin((lo2 - lo1) / 2) ** 2
+    return 2 * 6371 * asin(sqrt(x))
+
+
+for f in FIRES:
+    f["HA"] = [round(f["ha"] * x) for x in HA_S]
+    f["PM"] = [round(f["pm"] * x) for x in PM_S]
+    f["RE"] = [round(f["reach"] * x, 1) for x in RE_S]
+    f["WIND"] = [f["wind"] + x for x in WIND_S]
+    f["DIR"] = [f["walt"] if h_ == 4 else f["wdir"] for h_ in range(7)]
+    f["dist"] = km_between(f["origin"], f["target"])  # origin -> downwind town
+    f["eta"] = next((i for i, r in enumerate(f["RE"]) if r >= f["dist"]), None)
+
+
+def zone_text(f, h):
+    if h == 0:
+        return "Ignition origin only. No smoke plume projected."
+    if f["RE"][h] < f["dist"]:
+        return f"Plume {f['dist'] - f['RE'][h]:.1f} km from the {f['target_name']} boundary."
+    return f"Leading edge has reached the {f['target_name']}; plume continuing downwind."
+
 
 if "hour" not in st.session_state:
     st.session_state.hour = 0
+st.session_state.setdefault("fire", FIRES[0]["name"])
+if "pending_fire" in st.session_state:  # set by a marker click; applied before the selector is created
+    st.session_state.fire = st.session_state.pop("pending_fire")
 
 
 def reset_hour():
     st.session_state.hour = 0
+
+
+def touch_fire():
+    st.session_state.fire_touched = True
 
 
 def aqi_label(pm):
@@ -101,54 +141,41 @@ def aqi_label(pm):
     return "Good", "ok"
 
 
-def plume(h):
-    """Fan-shaped polygon from the origin toward Oakridge (SE); length and width grow with hour."""
-    dx, dy = OAKRIDGE[0] - IGNITION[0], OAKRIDGE[1] - IGNITION[1]
+def _path(f, h):
+    """Unit vectors (along, across wind) and plume length/half-width in degrees for fire f at hour h."""
+    (la0, lo0), (la1, lo1) = f["origin"], f["target"]
+    dx, dy = la1 - la0, lo1 - lo0
     n = (dx * dx + dy * dy) ** 0.5
-    ux, uy = dx / n, dy / n  # along-wind unit vector (degrees)
-    px, py = uy, -ux  # cross-wind unit vector
-    length = n * REACH_KM[h] / 8.7
-    half = 0.004 + 0.0022 * REACH_KM[h]
-    ts = [i / 6 for i in range(7)]
+    ux, uy = dx / n, dy / n
+    return ux, uy, uy, -ux, n * f["RE"][h] / f["dist"], 0.004 + 0.0022 * f["RE"][h]
+
+
+def plume(f, h):
+    """Fan-shaped polygon from the fire origin toward its downwind town; grows with the hour."""
+    ux, uy, px, py, length, half = _path(f, h)
+    o = f["origin"]
     side = lambda s: [
-        (
-            IGNITION[0] + ux * length * t + s * px * half * (0.3 + 0.7 * t),
-            IGNITION[1] + uy * length * t + s * py * half * (0.3 + 0.7 * t),
-        )
-        for t in ts
+        (o[0] + ux * length * t + s * px * half * (0.3 + 0.7 * t), o[1] + uy * length * t + s * py * half * (0.3 + 0.7 * t))
+        for t in (i / 6 for i in range(7))
     ]
     return side(1) + side(-1)[::-1]
 
 
-def get_heatmap_data(h):
-    """[lat, lon, weight] points spreading from the ignition along the wind path; intensity tracks PM2.5."""
-    dx, dy = OAKRIDGE[0] - IGNITION[0], OAKRIDGE[1] - IGNITION[1]
-    n = (dx * dx + dy * dy) ** 0.5
-    ux, uy = dx / n, dy / n
-    px, py = uy, -ux
-    peak = PM25[h] / max(PM25)
+def get_heatmap_data(f, h):
+    """[lat, lon, weight] points spreading from the fire origin along the wind path; intensity tracks PM2.5."""
+    o = f["origin"]
+    peak = f["PM"][h] / 600
     if h == 0:
-        return [[*IGNITION, peak]]
-    length = n * REACH_KM[h] / 8.7
-    half = 0.004 + 0.0022 * REACH_KM[h]
+        return [[*o, peak]]
+    ux, uy, px, py, length, half = _path(f, h)
     pts = []
     for i in range(14):
         t = i / 13
         w = peak * (1 - 0.6 * t)  # concentration falls off downwind
         spread = half * (0.3 + 0.7 * t)
         for c in (-1.0, -0.5, 0, 0.5, 1.0):
-            pts.append([
-                IGNITION[0] + ux * length * t + px * spread * c,
-                IGNITION[1] + uy * length * t + py * spread * c,
-                w * (1 - 0.5 * abs(c)),
-            ])
+            pts.append([o[0] + ux * length * t + px * spread * c, o[1] + uy * length * t + py * spread * c, w * (1 - 0.5 * abs(c))])
     return pts
-
-
-def km_between(a, b):
-    la1, lo1, la2, lo2 = map(radians, (*a, *b))
-    x = sin((la2 - la1) / 2) ** 2 + cos(la1) * cos(la2) * sin((lo2 - lo1) / 2) ** 2
-    return 2 * 6371 * asin(sqrt(x))
 
 
 def in_poly(pt, poly):
@@ -161,26 +188,26 @@ def in_poly(pt, poly):
     return inside
 
 
-def location_alert(user, h, geo_state):
-    """(css class, icon text, title, body) for the active location at forecast hour h."""
+def location_alert(user, h, geo_state, f):
+    """(css class, icon text, title, body) for the active location against fire f at forecast hour h."""
     if user is None:
         if geo_state == "pending":
             return "", "?", "Requesting Location", "Allow location access in the browser prompt. You can also click the map to test a point."
         note = "Device GPS is blocked or unavailable. " if st.session_state.get("fell_back") else ""
         return "", "?", "Awaiting Location", note + "Click anywhere on the map to test a location."
-    dist = km_between(user, IGNITION)
-    if h and in_poly(user, plume(h)):
+    dist = km_between(user, f["origin"])
+    if h and in_poly(user, plume(f, h)):
         return "crit", "!", "Danger: Inside Smoke Plume", (
-            f"Your location is under the plume at Hour {h} (PM2.5 {PM25[h]} ug/m3, {aqi_label(PM25[h])[0]}). "
-            f"Shelter in place or evacuate if ordered. Fire is {dist:.1f} km away in Sector 4.")
-    eta = next((i for i in range(h + 1, 7) if in_poly(user, plume(i))), None)
+            f"Your location is under the {f['short']} plume at Hour {h} (PM2.5 {f['PM'][h]} ug/m3, {aqi_label(f['PM'][h])[0]}). "
+            f"Shelter in place or evacuate if ordered. Fire is {dist:.1f} km away.")
+    eta = next((i for i in range(h + 1, 7) if in_poly(user, plume(f, i))), None)
     if eta:
         return "crit", "!", f"Danger: Plume Arrives Hour {eta}", (
-            f"Smoke is forecast over your location in {eta - h} h. Prepare to evacuate now. "
-            f"Fire is {dist:.1f} km away in Sector 4.")
+            f"Smoke from {f['name']} is forecast over your location in {eta - h} h. Prepare to evacuate now. "
+            f"Fire is {dist:.1f} km away.")
     return "ok", "OK", "Safe: Outside Plume Zone", (
-        f"The nearest fire is {dist:.1f} km away in Sector 4, United States. "
-        "Your location stays clear of the plume through Hour 6. Keep monitoring.")
+        f"{f['name']} is {dist:.1f} km away. "
+        "Your location stays clear of its plume through Hour 6. Keep monitoring.")
 
 
 def card(label, value, delta, cls=""):
@@ -188,20 +215,20 @@ def card(label, value, delta, cls=""):
 
 
 # ---------- header, timeline, metrics ----------
-h = st.session_state.hour
+fire = FIRE_BY_NAME[st.session_state.fire]
 t1, t2 = st.columns([6, 1], vertical_alignment="bottom")
 t1.slider("Forecast timeline (hours from predicted ignition)", 0, 6, key="hour", format="Hour %d")
 t2.button("Reset to Hour 0", on_click=reset_hour)
 h = st.session_state.hour  # re-read after the widget/callback
 
-label, lcls = aqi_label(PM25[h])
-wind_delta = "Stable" if WIND_DIR[h] == "NW" and h in (0, 1, 5, 6) else "Shifting"
+label, lcls = aqi_label(fire["PM"][h])
+wind_delta = "Shifting" if 2 <= h <= 4 else "Stable"
 st.markdown(
     '<div class="cards">'
-    + card("Active Monitoring Zone", "Sector 4 (North Hills)", "Live Feed", "")
-    + card("Predicted Fire Severity", "High Risk", f"{HECTARES[h]} Hectares (Hour {h})", "crit")
-    + card("Wind Vector", f"{WIND[h]} km/h ({WIND_DIR[h]})", wind_delta, "warn")
-    + card("Downwind Air Quality", f"{label} (PM2.5: {PM25[h]})", "Alert Active" if h else "Baseline", lcls)
+    + card("Active Monitoring Zone", fire["name"], "Live Feed", "")
+    + card("Predicted Fire Severity", fire["sev"], f"{fire['HA'][h]} Hectares (Hour {h})", fire["cls"])
+    + card("Wind Vector", f"{fire['WIND'][h]} km/h ({fire['DIR'][h]})", wind_delta, "warn")
+    + card("Downwind Air Quality", f"{label} (PM2.5: {fire['PM'][h]})", "Alert Active" if h else "Baseline", lcls)
     + "</div>",
     unsafe_allow_html=True,
 )
@@ -252,43 +279,59 @@ with rc:
     alert_slot = st.empty()  # filled after the map so a fresh click is already known
 
 with left:
-    mode = st.radio("Map display mode", ["Wildfire Plume & Spread", "Air Quality (AQI) Heat Map"],
+    r1, r2 = st.columns([5, 4], vertical_alignment="center")
+    r1.radio("Active fire", [x["name"] for x in FIRES], horizontal=True, label_visibility="collapsed",
+             key="fire", on_change=touch_fire)
+    mode = r2.radio("Map display mode", ["Wildfire Plume & Spread", "Air Quality (AQI) Heat Map"],
                     horizontal=True, label_visibility="collapsed", key="mode")
-    # Auto mode with a GPS fix: open on the user; otherwise the default overview
-    center = user if src.startswith("Auto") and user else (37.775, -122.43)
-    m = folium.Map(location=center, zoom_start=12, tiles="OpenStreetMap")
+    # Open on the user's GPS fix until a fire is picked; afterwards follow the selected fire
+    use_gps_center = src.startswith("Auto") and user and not st.session_state.get("fire_touched")
+    m = folium.Map(location=user if use_gps_center else fire["origin"], zoom_start=11, tiles="OpenStreetMap")
     # st_folium sets #map_div to an inline `height` px; make it fill the (CSS-resized) iframe instead
     m.get_root().header.add_child(
         folium.Element("<style>html,body{height:100%;margin:0;overflow:hidden}#map_div,#map_div2,.folium-map{height:100vh!important}</style>")
     )
-    folium.Marker(
-        IGNITION,
-        tooltip="Predicted ignition origin",
-        popup="Predicted ignition origin - Sector 4 (North Hills)",
-        icon=folium.Icon(color="red", icon="fire", prefix="fa"),
-    ).add_to(m)
+    for x in FIRES:
+        sel = x is fire
+        if sel:
+            folium.CircleMarker(x["origin"], radius=22, color="#e03131", weight=3, fill=True, fill_opacity=0.12).add_to(m)
+        folium.Marker(
+            x["origin"],
+            tooltip=x["name"],  # st_folium reports this on click; used to select the fire
+            popup=folium.Popup(f"{x['name']}: {x['sev']}, {x['HA'][h]} ha at Hour {h}", max_width=280),
+            icon=folium.Icon(color=x["color"], icon="fire", prefix="fa"),
+        ).add_to(m)
     if user:
         folium.Marker(user, tooltip="Your test location", icon=folium.Icon(color="darkblue", icon="user", prefix="fa")).add_to(m)
     if mode.startswith("Air"):
-        HeatMap(get_heatmap_data(h), radius=38, blur=28, min_opacity=0.25, max_val=1.0,
+        HeatMap(get_heatmap_data(fire, h), radius=38, blur=28, min_opacity=0.25, max_val=1.0,
                 gradient={0.2: "#4a6fa5", 0.5: "#c98a0b", 0.8: "#c2410c", 1.0: "#7a0f12"}).add_to(m)
     elif h > 0:
         folium.Polygon(
-            plume(h),
+            plume(fire, h),
             color="#7a0f12",
             weight=2,
             fill=True,
             fill_color="#c2410c",
             fill_opacity=0.45,
-            tooltip=f"Hour {h}: {HECTARES[h]} ha, PM2.5 {PM25[h]} ug/m3, reach {REACH_KM[h]} km",
+            tooltip=f"{fire['short']} Hour {h}: {fire['HA'][h]} ha, PM2.5 {fire['PM'][h]} ug/m3, reach {fire['RE'][h]} km",
         ).add_to(m)
-    res = st_folium(m, use_container_width=True, height=560, returned_objects=["last_clicked"], key="map")
-    c = (res or {}).get("last_clicked")
+    res = st_folium(m, use_container_width=True, height=560,
+                    returned_objects=["last_clicked", "last_object_clicked_tooltip"], key="map")
+    res = res or {}
+    tt = res.get("last_object_clicked_tooltip")
+    if tt in FIRE_BY_NAME and tt != st.session_state.get("last_tt"):  # new marker click
+        st.session_state.last_tt = tt
+        if tt != st.session_state.fire:
+            st.session_state.pending_fire = tt
+            st.session_state.fire_touched = True
+            st.rerun()
+    c = res.get("last_clicked")
     if c and src.startswith("Click") and (c["lat"], c["lng"]) != st.session_state.get("click_loc"):
         st.session_state.click_loc = (c["lat"], c["lng"])
         st.rerun()
 
-acls, icon, atitle, abody = location_alert(user, h, geo_state)
+acls, icon, atitle, abody = location_alert(user, h, geo_state, fire)
 if user:
     abody += f'<div style="opacity:.7;margin-top:4px;font-size:.78rem">Location source: {"Map click" if src.startswith("Click") else "Device GPS"}</div>'
 alert_slot.markdown(
@@ -296,40 +339,42 @@ alert_slot.markdown(
     unsafe_allow_html=True,
 )
 
+f_, T = fire, fire["target_name"]
+eta_txt = f"Hour {f_['eta']}" if f_["eta"] is not None else "after Hour 6"
 with rc:
     with st.container(key="advisory"):
         gov, pub = st.tabs(["Government / Municipal Command", "Public / Citizen Advisory"])
         with gov:
             st.markdown(
                 f"""<div class="panel">
-<div class="zone"><span class="badge {lcls}">Hour {h}</span>&nbsp; {ZONE[h]}</div>
+<div class="zone"><span class="badge {lcls}">Hour {h}</span>&nbsp; {f_['name']}: {zone_text(f_, h)}</div>
 <h4>Strategic Incident Metrics</h4>
-<ul><li>Projected burn area: <b>{HECTARES[h]} ha</b></li>
-<li>Plume leading edge: <b>{REACH_KM[h]} km</b> SE of origin</li>
-<li>Peak PM2.5: <b>{PM25[h]} ug/m3</b> ({label})</li>
-<li>Threat level: <span class="badge crit">High</span></li></ul>
+<ul><li>Projected burn area: <b>{f_['HA'][h]} ha</b> (6-hour peak {f_['ha']} ha)</li>
+<li>Plume leading edge: <b>{f_['RE'][h]} km</b> from origin toward {T}</li>
+<li>Peak PM2.5: <b>{f_['PM'][h]} ug/m3</b> ({label})</li>
+<li>Threat level: <span class="badge {f_['cls']}">{f_['sev']}</span></li></ul>
 <h4>Resource Pre-Positioning Orders</h4>
-<ul><li>Engine Strike Teams 1-3 to the North Ridge access road staging area</li>
-<li>Air tanker and helitanker standby at Sector 4 helibase</li>
-<li>Mobile air-quality monitors to Oakridge District and Marlow Heights</li>
-<li>EMS surge units to Oakridge Community Hospital</li></ul>
+<ul><li>Engine Strike Teams 1-3 to the {f_['staging']}</li>
+<li>Air tanker and helitanker standby at {f_['helibase']}</li>
+<li>Mobile air-quality monitors to {T} and {f_['nearby']}</li>
+<li>EMS surge units to {f_['hospital']}</li></ul>
 <h4>Mandatory Evacuation Sequencing</h4>
-<ul><li><b>Phase 1</b> (Hour 0-2): Sector 4 residences and ridge trailheads</li>
-<li><b>Phase 2</b> (Hour 2-4): Marlow Heights, special-needs and care facilities first</li>
-<li><b>Phase 3</b> (Hour 4-6): Oakridge District, via Route 9 southbound</li></ul>
+<ul><li><b>Phase 1</b> (Hour 0-2): {f_['short']} residences and trailheads</li>
+<li><b>Phase 2</b> (Hour 2-4): {f_['nearby']}, special-needs and care facilities first</li>
+<li><b>Phase 3</b> (smoke arrival: {eta_txt}): {T}, via {f_['route']}</li></ul>
 <h4>Inter-Agency Coordination</h4>
-<ul><li>State fire agency: unified command established at Sector 4 post</li>
-<li>Highway patrol: contraflow on Route 9 on Phase 3 order</li>
+<ul><li>State fire agency: unified command established at the {f_['short']} post</li>
+<li>Highway patrol: contraflow on {f_['route']} on Phase 3 order</li>
 <li>County health: shelter and respirator distribution</li>
-<li>Meteorological service: hourly wind-shift updates to the dispersion model</li></ul>
+<li>Meteorological service: hourly wind-shift updates ({f_['DIR'][h]} at {f_['WIND'][h]} km/h) to the dispersion model</li></ul>
 </div>""",
                 unsafe_allow_html=True,
             )
         with pub:
             st.markdown(
                 f"""<div class="panel">
-<div class="zone"><span class="badge {lcls}">{label}</span>&nbsp; Air quality forecast for Hour {h}. {ZONE[h]}</div>
-<h4>Shelter in Place (Oakridge District)</h4>
+<div class="zone"><span class="badge {lcls}">{label}</span>&nbsp; {f_['name']} air quality forecast for Hour {h}. {zone_text(f_, h)}</div>
+<h4>Shelter in Place ({T})</h4>
 <ul><li>Stay indoors. Close all windows, doors and fireplace dampers.</li>
 <li>Turn off fans that draw in outside air; set HVAC to recirculate.</li></ul>
 <h4>Air Filtration</h4>
@@ -337,8 +382,8 @@ with rc:
 <li>If you must go outside, wear a fitted N95 or P100 respirator. Cloth and surgical masks do not protect against smoke.</li>
 <li>Children, older adults and people with asthma or heart conditions should avoid all exertion.</li></ul>
 <h4>Evacuation Corridors</h4>
-<ul><li><b>Oakridge District:</b> leave via Route 9 southbound only when ordered. Do not travel north or west.</li>
-<li>Avoid Ridge Road; it is reserved for emergency vehicles.</li>
+<ul><li><b>{T}:</b> leave via {f_['route']} only when ordered. Do not travel toward the fire ({f_['short']}).</li>
+<li>Avoid {f_['avoid']}; it is reserved for emergency vehicles.</li>
 <li>Take medications, documents, pets and a 3-day supply of water.</li></ul>
 <h4>Stay Informed</h4>
 <ul><li>Follow official alerts on the county emergency channel and emergency radio.</li>
@@ -346,7 +391,6 @@ with rc:
 </div>""",
                 unsafe_allow_html=True,
             )
-
 
     st.markdown(
         '<div class="sys">'
