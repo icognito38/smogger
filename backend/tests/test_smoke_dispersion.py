@@ -17,6 +17,7 @@ def make_request() -> SmokeImpactRequest:
                 arrival_hour=2,
                 distance_from_fire_km=24,
                 path_probability=0.72,
+                Predicted_PM25_6h=42.8,
             )
         ],
     )
@@ -30,6 +31,8 @@ def test_returns_percentage_risk_without_recalculating_trajectory():
     assert city.confidence_percent == 72
     assert city.arrival_hour == 2
     assert city.name == "City A"
+    assert city.estimated_pm25 == 42.8
+    assert city.risk_score_percent == round((42.8 / 150) * 0.72 * 100, 2)
 
 
 def test_larger_distance_reduces_impact():
@@ -42,6 +45,7 @@ def test_larger_distance_reduces_impact():
             arrival_hour=5,
             distance_from_fire_km=200,
             path_probability=0.72,
+            Predicted_PM25_6h=10,
         )
     )
 
@@ -56,3 +60,23 @@ def test_endpoint_contract_has_only_city_impacts():
     assert set(result) == {"cities", "model_note"}
     assert "geometry" not in result
     assert "forecast" not in result
+
+
+def test_accepts_notebook_field_names_and_converts_miles():
+    request = SmokeImpactRequest(
+        cities=[
+            PredictedCity(
+                name="Montreal",
+                latitude=45.5016,
+                longitude=-73.5672,
+                arrival_hour=6,
+                distance_from_fire_miles=100,
+                Predicted_PM25_6h=35,
+            )
+        ]
+    )
+
+    city = assess_smoke_impact(request).cities[0]
+
+    assert city.estimated_pm25 == 35
+    assert city.risk_score_percent == round((35 / 150) * 100, 2)

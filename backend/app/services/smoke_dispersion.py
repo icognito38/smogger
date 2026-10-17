@@ -1,5 +1,3 @@
-import math
-
 from app.models.smoke import (
     CitySmokeImpact,
     SmokeImpactRequest,
@@ -41,20 +39,21 @@ def _health_advisory(risk_level: str) -> str:
     return advisories[risk_level]
 
 
-def _impact_score(request: SmokeImpactRequest, city_distance_km: float) -> float:
-    """Return a transparent 0-100 relative smoke-impact score."""
-    fire = request.fire
-    source_strength = min(1.0, (fire.size_hectares / 500) * fire.intensity)
-    distance_factor = math.exp(-city_distance_km / 100)
-    return source_strength * distance_factor * 100
+def _impact_score(predicted_pm25: float, path_probability: float) -> float:
+    """Convert the teammate model's PM2.5 forecast into a 0-100 score."""
+    # 150 ug/m3 is used as the upper reference point for the presentation
+    # score. The PM2.5 forecast itself is never recalculated here.
+    concentration_factor = min(1.0, predicted_pm25 / 150)
+    return concentration_factor * path_probability * 100
 
 
 def assess_smoke_impact(request: SmokeImpactRequest) -> SmokeImpactResponse:
     """Score cities from a trajectory supplied by the prediction branch."""
     impacts = []
     for city in request.cities:
-        base_score = _impact_score(request, city.distance_from_fire_km)
-        risk_score = round(base_score * city.path_probability, 2)
+        risk_score = round(
+            _impact_score(city.predicted_pm25_6h, city.path_probability), 2
+        )
         risk_level = _risk_level(risk_score)
         confidence = round(city.path_probability * 100, 2)
         impacts.append(
@@ -63,7 +62,7 @@ def assess_smoke_impact(request: SmokeImpactRequest) -> SmokeImpactResponse:
                 latitude=city.latitude,
                 longitude=city.longitude,
                 arrival_hour=city.arrival_hour,
-                estimated_pm25=round(risk_score * 2, 2),
+                estimated_pm25=city.predicted_pm25_6h,
                 risk_score_percent=risk_score,
                 risk_level=risk_level,
                 confidence_percent=confidence,
