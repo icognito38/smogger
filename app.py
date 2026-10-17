@@ -3,6 +3,7 @@ import streamlit as st
 from folium.plugins import HeatMap
 from math import asin, cos, radians, sin, sqrt
 from streamlit_folium import st_folium
+from streamlit_geolocation import streamlit_geolocation
 
 st.set_page_config(page_title="Wildfire & Smog Intelligence Platform", layout="wide")
 
@@ -11,7 +12,7 @@ st.markdown(
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 :root { --bg:#14181d; --panel:#1c222a; --line:#38424f; --text:#e6e9ed; --mute:#98a2b0;
-        --crimson:#a4161a; --amber:#c98a0b; --slate:#4a6fa5; --ok:#3f7d58; --top:200px; --foot:88px; --radio:44px; --pre:190px; }
+        --crimson:#a4161a; --amber:#c98a0b; --slate:#4a6fa5; --ok:#3f7d58; --top:200px; --radio:44px; }
 html, body, [class*="css"], .stApp { font-family:'Inter', system-ui, sans-serif; }
 .stApp { background:var(--bg); color:var(--text); }
 header[data-testid="stHeader"], footer { display:none; }
@@ -28,13 +29,21 @@ header[data-testid="stHeader"], footer { display:none; }
 .badge.crit { background:var(--crimson); } .badge.warn { background:var(--amber); } .badge.ok { background:var(--ok); }
 .zone { background:var(--panel); border:1px solid var(--line); border-left:4px solid var(--amber);
         padding:6px 12px; margin-bottom:6px; font-size:.85rem; }
-.alert { border:1px solid var(--line); border-left:6px solid var(--slate); background:var(--panel); padding:8px 12px; font-size:.84rem; min-height:96px; box-sizing:border-box; }
-.alert.crit { border-left-color:var(--crimson); } .alert.ok { border-left-color:var(--ok); }
-.alert b.t { display:block; font-size:.78rem; text-transform:uppercase; letter-spacing:.06em; margin-bottom:3px; }
-.stTabs [data-baseweb="tab-list"] { gap:0; border-bottom:1px solid var(--line); }
-.stTabs [data-baseweb="tab"] { background:var(--panel); border:1px solid var(--line); border-bottom:none;
-        padding:6px 14px; font-size:.78rem; font-weight:600; text-transform:uppercase; letter-spacing:.05em; color:var(--mute); }
+.alert { margin-bottom:10px; display:flex; align-items:center; gap:16px; border:4px solid var(--slate); background:var(--panel); padding:16px 18px; box-sizing:border-box; }
+.alert .ic { flex:none; width:64px; height:64px; display:flex; align-items:center; justify-content:center; font-size:2.3rem; font-weight:800; color:#fff; background:var(--slate); }
+.alert .t { font-size:1.45rem; font-weight:800; text-transform:uppercase; letter-spacing:.03em; line-height:1.15; }
+.alert .b { font-size:.92rem; margin-top:5px; line-height:1.35; }
+.alert.crit { border-color:#e03131; background:linear-gradient(90deg,#5c0f12,#2a1517); animation:pulse 1.6s ease-in-out infinite; }
+.alert.crit .ic { background:#e03131; }
+.alert.ok { border-color:#37b26c; background:linear-gradient(90deg,#10432a,#14261d); }
+.alert.ok .ic { background:#37b26c; }
+@keyframes pulse { 50% { box-shadow:0 0 0 4px rgba(224,49,49,.45); } }
+.stTabs [role="tablist"] { gap:0; border-bottom:1px solid var(--line); }
+.stTabs [role="tab"] { background:var(--panel); border:1px solid var(--line); border-bottom:none;
+        padding:6px 14px; font-size:.78rem; font-weight:600; text-transform:uppercase; letter-spacing:.05em; color:#c3cad3; }
+.stTabs [role="tab"] p { color:#c3cad3 !important; }
 .stTabs [aria-selected="true"] { background:var(--slate); color:#fff; }
+.stTabs [aria-selected="true"] p { color:#fff !important; }
 .panel h4 { font-size:.78rem; text-transform:uppercase; letter-spacing:.08em; color:var(--mute);
             border-bottom:1px solid var(--line); padding-bottom:3px; margin:10px 0 4px 0; }
 .panel ul { margin:0 0 0 1.1rem; padding:0; font-size:.84rem; } .panel li { margin-bottom:3px; }
@@ -42,7 +51,11 @@ header[data-testid="stHeader"], footer { display:none; }
 .sys .card { border-top-width:2px; padding:5px 10px; } .sys .v { font-size:1rem; }
 /* vertical fill: iframe + advisory pane track the viewport height */
 iframe[title="streamlit_folium.st_folium"] { height:calc(100vh - var(--top) - var(--radio)) !important; min-height:380px; border:1px solid var(--line); display:block; }
-.st-key-advisory { height:calc(100vh - var(--top) - var(--foot) - var(--pre)) !important; min-height:420px; overflow-y:auto; border:1px solid var(--line); background:var(--panel); padding:4px 12px; }
+[data-testid="stLayoutWrapper"]:has(> .st-key-rightcol) { height:calc(100vh - var(--top) + 4px); min-height:420px; }
+.st-key-rightcol { height:100% !important; display:flex; flex-direction:column; gap:.5rem; }
+.st-key-rightcol > [data-testid="stLayoutWrapper"] { flex:1 1 0; min-height:0; display:flex; flex-direction:column; }
+.st-key-advisory { flex:1 1 0; height:auto !important; min-height:0; overflow-y:auto; border:1px solid var(--line); background:var(--panel); padding:10px 12px 4px 12px; }
+div[data-testid="stWidgetLabel"] p, div[data-testid="stSlider"] label p, div[data-testid="stRadio"] label p { color:var(--text) !important; }
 div[data-testid="stSlider"] label p, .stButton button { font-size:.78rem; text-transform:uppercase; letter-spacing:.05em; }
 .stButton button { border-radius:0; background:var(--panel); border:1px solid var(--line); color:var(--text); width:100%; }
 .stButton button:hover { border-color:var(--crimson); color:#fff; }
@@ -130,34 +143,41 @@ def get_heatmap_data(h):
     return pts
 
 
-LOCATIONS = {
-    "Inside Plume / Affected Zone (Oakridge District / Marlow Heights)": OAKRIDGE,
-    "Outside Plume / Safe Zone (Downtown SF / Remote)": (37.7879, -122.4075),
-}
-
-
 def km_between(a, b):
     la1, lo1, la2, lo2 = map(radians, (*a, *b))
     x = sin((la2 - la1) / 2) ** 2 + cos(la1) * cos(la2) * sin((lo2 - lo1) / 2) ** 2
     return 2 * 6371 * asin(sqrt(x))
 
 
-def location_alert(loc, h):
-    """Returns (css class, title, body) for the selected test location at forecast hour h."""
-    where = LOCATIONS[loc]
-    dist = km_between(where, IGNITION)
-    if where == OAKRIDGE:
-        eta = next((i for i, r in enumerate(REACH_KM) if r >= km_between(where, IGNITION)), None)
-        if eta is not None and h >= eta:
-            return "crit", "Urgent: Evacuation Order", (
-                f"Smoke plume is over your location (PM2.5 {PM25[h]} ug/m3). Evacuate via Route 9 southbound "
-                "if ordered; otherwise shelter in place with windows sealed.")
-        return "crit", "Urgent: Evacuation Alert", (
-            f"Your location is inside the projected plume path. Smoke arrives at about Hour {eta} "
-            f"({eta - h} h from now). Prepare to evacuate now; the fire is {dist:.1f} km away in Sector 4.")
-    return "ok", "Safety Alert: Outside Affected Zone", (
+def in_poly(pt, poly):
+    """Ray-casting point-in-polygon on (lat, lon) pairs."""
+    y, x = pt
+    inside = False
+    for (y1, x1), (y2, x2) in zip(poly, poly[1:] + poly[:1]):
+        if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
+            inside = not inside
+    return inside
+
+
+def location_alert(user, h, src):
+    """(css class, icon text, title, body) for the active test location at forecast hour h."""
+    if user is None:
+        hint = ("Allow location access in your browser." if src.startswith("Auto")
+                else "Click anywhere on the map to place a test location.")
+        return "", "?", "Awaiting Location", hint
+    dist = km_between(user, IGNITION)
+    if h and in_poly(user, plume(h)):
+        return "crit", "!", "Danger: Inside Smoke Plume", (
+            f"Your location is under the plume at Hour {h} (PM2.5 {PM25[h]} ug/m3, {aqi_label(PM25[h])[0]}). "
+            f"Shelter in place or evacuate if ordered. Fire is {dist:.1f} km away in Sector 4.")
+    eta = next((i for i in range(h + 1, 7) if in_poly(user, plume(i))), None)
+    if eta:
+        return "crit", "!", f"Danger: Plume Arrives Hour {eta}", (
+            f"Smoke is forecast over your location in {eta - h} h. Prepare to evacuate now. "
+            f"Fire is {dist:.1f} km away in Sector 4.")
+    return "ok", "OK", "Safe: Outside Plume Zone", (
         f"The nearest fire is {dist:.1f} km away in Sector 4, United States. "
-        "Your location is outside the projected plume for the 6-hour forecast. No action required; keep monitoring.")
+        "Your location stays clear of the plume through Hour 6. Keep monitoring.")
 
 
 def card(label, value, delta, cls=""):
@@ -185,6 +205,17 @@ st.markdown(
 
 # ---------- map + advisory ----------
 left, right = st.columns([2, 1])
+rc = right.container(key="rightcol")
+
+with rc:
+    src = st.radio("Test location source", ["Auto-detect Device GPS", "Click on Map to Test Location"],
+                   horizontal=True, key="locsrc")
+    if src.startswith("Auto"):
+        g = streamlit_geolocation()
+        user = (g["latitude"], g["longitude"]) if g and g.get("latitude") is not None else None
+    else:
+        user = st.session_state.get("click_loc")
+    alert_slot = st.empty()  # filled after the map so a fresh click is already known
 
 with left:
     mode = st.radio("Map display mode", ["Wildfire Plume & Spread", "Air Quality (AQI) Heat Map"],
@@ -200,11 +231,8 @@ with left:
         popup="Predicted ignition origin - Sector 4 (North Hills)",
         icon=folium.Icon(color="red", icon="fire", prefix="fa"),
     ).add_to(m)
-    folium.Marker(
-        OAKRIDGE,
-        tooltip="Oakridge District",
-        icon=folium.Icon(color="blue", icon="home", prefix="fa"),
-    ).add_to(m)
+    if user:
+        folium.Marker(user, tooltip="Your test location", icon=folium.Icon(color="darkblue", icon="user", prefix="fa")).add_to(m)
     if mode.startswith("Air"):
         HeatMap(get_heatmap_data(h), radius=38, blur=28, min_opacity=0.25, max_val=1.0,
                 gradient={0.2: "#4a6fa5", 0.5: "#c98a0b", 0.8: "#c2410c", 1.0: "#7a0f12"}).add_to(m)
@@ -218,13 +246,20 @@ with left:
             fill_opacity=0.45,
             tooltip=f"Hour {h}: {HECTARES[h]} ha, PM2.5 {PM25[h]} ug/m3, reach {REACH_KM[h]} km",
         ).add_to(m)
-    st_folium(m, use_container_width=True, height=560, returned_objects=[], key=f"map_{mode}_{h}")
+    res = st_folium(m, use_container_width=True, height=560, returned_objects=["last_clicked"], key="map")
+    c = (res or {}).get("last_clicked")
+    if src.startswith("Click") and c and (c["lat"], c["lng"]) != st.session_state.get("click_loc"):
+        st.session_state.click_loc = (c["lat"], c["lng"])
+        st.rerun()
 
-with right:
-    loc = st.selectbox("Test User Location", list(LOCATIONS), key="loc")
-    cls, title, body = location_alert(loc, h)
-    st.markdown(f'<div class="alert {cls}"><b class="t">{title}</b>{body}</div>', unsafe_allow_html=True)
-    with st.container(key="advisory", height=560):
+acls, icon, atitle, abody = location_alert(user, h, src)
+alert_slot.markdown(
+    f'<div class="alert {acls}"><div class="ic">{icon}</div><div><div class="t">{atitle}</div><div class="b">{abody}</div></div></div>',
+    unsafe_allow_html=True,
+)
+
+with rc:
+    with st.container(key="advisory"):
         gov, pub = st.tabs(["Government / Municipal Command", "Public / Citizen Advisory"])
         with gov:
             st.markdown(
@@ -273,6 +308,7 @@ with right:
 </div>""",
                 unsafe_allow_html=True,
             )
+
 
     st.markdown(
         '<div class="sys">'
