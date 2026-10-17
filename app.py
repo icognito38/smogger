@@ -57,6 +57,12 @@ iframe[title="streamlit_folium.st_folium"] { height:calc(100vh - var(--top) - va
 .st-key-rightcol { height:100% !important; display:flex; flex-direction:column; gap:.5rem; }
 .st-key-rightcol > [data-testid="stLayoutWrapper"] { flex:1 1 0; min-height:0; display:flex; flex-direction:column; }
 .st-key-advisory { flex:1 1 0; height:auto !important; min-height:0; overflow-y:auto; border:1px solid var(--line); background:var(--panel); padding:10px 12px 4px 12px; }
+[data-testid="stSelectbox"] div { background-color:var(--panel) !important; color:var(--text) !important; border-radius:0 !important; }
+[data-testid="stSelectbox"] * { color:var(--text) !important; opacity:1 !important; -webkit-text-fill-color:var(--text); }
+[data-testid="stSelectbox"] svg { fill:var(--text); }
+[data-testid="stSelectbox"] > div > div > div { border:1px solid var(--line); }
+[data-testid="stSelectboxVirtualDropdown"], [data-testid="stSelectboxVirtualDropdown"] * { background-color:var(--panel) !important; color:var(--text) !important; }
+[data-testid="stSelectboxVirtualDropdown"] li:hover, [data-testid="stSelectboxVirtualDropdown"] li:hover * { background-color:var(--line) !important; }
 div[data-testid="stWidgetLabel"] p, div[data-testid="stSlider"] label p, div[data-testid="stRadio"] label p { color:var(--text) !important; }
 div[data-testid="stSlider"] label p, .stButton button { font-size:.78rem; text-transform:uppercase; letter-spacing:.05em; }
 .stButton button { border-radius:0; background:var(--panel); border:1px solid var(--line); color:var(--text); width:100%; }
@@ -75,20 +81,41 @@ WIND_S = [0, 0, 2, 3, 1, 0, -1]
 FIRES = [
     dict(name="Sector 4 - North Hills", short="Sector 4", origin=(37.8044, -122.4500), target=(37.7450, -122.3850),
          target_name="Oakridge District", ha=45, pm=480, reach=10.2, wind=28, wdir="NW", walt="NNW",
+         country="United States", region="California / San Francisco County",
          sev="High Risk", cls="crit", color="red", staging="North Ridge access road staging area",
          helibase="Sector 4 helibase", route="Route 9 southbound", hospital="Oakridge Community Hospital",
          avoid="Ridge Road", nearby="Marlow Heights"),
     dict(name="East Bay Ridge Corridor", short="East Bay Ridge", origin=(37.8350, -122.2100), target=(37.8030, -122.2700),
          target_name="Lakeshore Flats", ha=78, pm=560, reach=9.5, wind=34, wdir="E", walt="ENE",
+         country="United States", region="California / Alameda County",
          sev="Extreme Risk", cls="crit", color="darkred", staging="Grizzly Peak staging area",
          helibase="Ridge Corridor helibase", route="Route 24 westbound", hospital="Lakeshore Medical Center",
          avoid="Skyline Spur Road", nearby="Hillcrest Terrace"),
     dict(name="Skyline Boulevard", short="Skyline Blvd", origin=(37.6800, -122.4900), target=(37.7200, -122.4300),
          target_name="Bayview Heights", ha=22, pm=310, reach=8.0, wind=21, wdir="SW", walt="WSW",
+         country="United States", region="California / San Mateo County",
          sev="Moderate Risk", cls="warn", color="orange", staging="Skyline summit staging area",
          helibase="Skyline helibase", route="Route 1 northbound", hospital="Bayview Heights Clinic",
          avoid="Skyline Boulevard", nearby="Crestmoor"),
+    dict(name="North Shore Mountains", short="North Shore", origin=(49.3900, -123.0900), target=(49.3300, -123.0000),
+         target_name="Burnaby Heights", ha=38, pm=420, reach=10.5, wind=24, wdir="NW", walt="NNW",
+         country="Canada", region="British Columbia / Metro Vancouver Region",
+         sev="High Risk", cls="crit", color="purple", staging="Seymour staging area",
+         helibase="North Shore helibase", route="Highway 1 eastbound", hospital="Burnaby General Hospital",
+         avoid="Mount Seymour Parkway", nearby="Capitol Hill"),
+    dict(name="Blue Mountains Escarpment", short="Blue Mountains", origin=(-33.7100, 150.3000), target=(-33.7600, 150.3900),
+         target_name="Glenbrook Township", ha=120, pm=540, reach=11.0, wind=38, wdir="W", walt="WNW",
+         country="Australia", region="New South Wales / Blue Mountains Region",
+         sev="Extreme Risk", cls="crit", color="cadetblue", staging="Great Western Highway staging area",
+         helibase="Blue Mountains helibase", route="Great Western Highway eastbound", hospital="Nepean Rural Hospital",
+         avoid="Bells Line of Road", nearby="Blaxland"),
 ]
+COUNTRIES = {  # country-level map view
+    "United States": dict(center=(39.5, -98.5), zoom=4),
+    "Canada": dict(center=(56.0, -96.0), zoom=3),
+    "Australia": dict(center=(-25.5, 134.0), zoom=4),
+}
+REGION_ZOOM = 11  # county / province view
 FIRE_BY_NAME = {f["name"]: f for f in FIRES}
 
 
@@ -118,16 +145,37 @@ def zone_text(f, h):
 
 if "hour" not in st.session_state:
     st.session_state.hour = 0
-st.session_state.setdefault("fire", FIRES[0]["name"])
-if "pending_fire" in st.session_state:  # set by a marker click; applied before the selector is created
-    st.session_state.fire = st.session_state.pop("pending_fire")
+
+
+ALL = "All regions"  # country-level view; the active fire is then the country's first fire
+
+
+def regions_of(country):
+    return [ALL] + [x["region"] for x in FIRES if x["country"] == country]
+
+
+st.session_state.setdefault("country", FIRES[0]["country"])
+st.session_state.setdefault("region", FIRES[0]["region"])
+st.session_state.setdefault("view", "region")  # which dropdown last drove the map: "country" or "region"
+if "pending_fire" in st.session_state:  # set by a marker click; applied before the dropdowns are created
+    _f = FIRE_BY_NAME[st.session_state.pop("pending_fire")]
+    st.session_state.country, st.session_state.region = _f["country"], _f["region"]
+if st.session_state.region not in regions_of(st.session_state.country):
+    st.session_state.region = ALL
 
 
 def reset_hour():
     st.session_state.hour = 0
 
 
-def touch_fire():
+def on_country():
+    st.session_state.region = ALL  # cascade: first region of the new country
+    st.session_state.view = "country"
+    st.session_state.fire_touched = True
+
+
+def on_region():
+    st.session_state.view = "country" if st.session_state.region == ALL else "region"
     st.session_state.fire_touched = True
 
 
@@ -215,7 +263,7 @@ def card(label, value, delta, cls=""):
 
 
 # ---------- header, timeline, metrics ----------
-fire = FIRE_BY_NAME[st.session_state.fire]
+fire = next(x for x in FIRES if x["country"] == st.session_state.country and st.session_state.region in (ALL, x["region"]))
 t1, t2 = st.columns([6, 1], vertical_alignment="bottom")
 t1.slider("Forecast timeline (hours from predicted ignition)", 0, 6, key="hour", format="Hour %d")
 t2.button("Reset to Hour 0", on_click=reset_hour)
@@ -279,14 +327,21 @@ with rc:
     alert_slot = st.empty()  # filled after the map so a fresh click is already known
 
 with left:
-    r1, r2 = st.columns([5, 4], vertical_alignment="center")
-    r1.radio("Active fire", [x["name"] for x in FIRES], horizontal=True, label_visibility="collapsed",
-             key="fire", on_change=touch_fire)
-    mode = r2.radio("Map display mode", ["Wildfire Plume & Spread", "Air Quality (AQI) Heat Map"],
+    r1, r2, r3 = st.columns([3, 5, 5], vertical_alignment="center")
+    r1.selectbox("Country", list(COUNTRIES), key="country", on_change=on_country,
+                 label_visibility="collapsed", format_func=lambda c: f"Country: {c}")
+    r2.selectbox("County / Province / Region", regions_of(st.session_state.country), key="region", on_change=on_region,
+                 label_visibility="collapsed", format_func=lambda r: f"Region: {r}")
+    mode = r3.radio("Map display mode", ["Wildfire Plume & Spread", "Air Quality (AQI) Heat Map"],
                     horizontal=True, label_visibility="collapsed", key="mode")
-    # Open on the user's GPS fix until a fire is picked; afterwards follow the selected fire
-    use_gps_center = src.startswith("Auto") and user and not st.session_state.get("fire_touched")
-    m = folium.Map(location=user if use_gps_center else fire["origin"], zoom_start=11, tiles="OpenStreetMap")
+    # Open on the user's GPS fix until a dropdown is used; then country view or the selected region's fire
+    if src.startswith("Auto") and user and not st.session_state.get("fire_touched"):
+        center, zoom = user, REGION_ZOOM
+    elif st.session_state.view == "country":
+        center, zoom = COUNTRIES[st.session_state.country]["center"], COUNTRIES[st.session_state.country]["zoom"]
+    else:
+        center, zoom = fire["origin"], REGION_ZOOM
+    m = folium.Map(location=center, zoom_start=zoom, tiles="OpenStreetMap")
     # st_folium sets #map_div to an inline `height` px; make it fill the (CSS-resized) iframe instead
     m.get_root().header.add_child(
         folium.Element("<style>html,body{height:100%;margin:0;overflow:hidden}#map_div,#map_div2,.folium-map{height:100vh!important}</style>")
@@ -304,7 +359,7 @@ with left:
     if user:
         folium.Marker(user, tooltip="Your test location", icon=folium.Icon(color="darkblue", icon="user", prefix="fa")).add_to(m)
     if mode.startswith("Air"):
-        HeatMap(get_heatmap_data(fire, h), radius=38, blur=28, min_opacity=0.25, max_val=1.0,
+        HeatMap(get_heatmap_data(fire, h), radius=38, blur=28, min_opacity=0.25,
                 gradient={0.2: "#4a6fa5", 0.5: "#c98a0b", 0.8: "#c2410c", 1.0: "#7a0f12"}).add_to(m)
     elif h > 0:
         folium.Polygon(
@@ -322,8 +377,9 @@ with left:
     tt = res.get("last_object_clicked_tooltip")
     if tt in FIRE_BY_NAME and tt != st.session_state.get("last_tt"):  # new marker click
         st.session_state.last_tt = tt
-        if tt != st.session_state.fire:
+        if tt != fire["name"]:
             st.session_state.pending_fire = tt
+            st.session_state.view = "region"
             st.session_state.fire_touched = True
             st.rerun()
     c = res.get("last_clicked")
