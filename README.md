@@ -1,4 +1,4 @@
-# 🔥 WildfireAI
+# 🔥 Smogger
 
 **Predict wildfires. Track smoke. Protect communities.**
 
