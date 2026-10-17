@@ -254,7 +254,9 @@ with rc:
 with left:
     mode = st.radio("Map display mode", ["Wildfire Plume & Spread", "Air Quality (AQI) Heat Map"],
                     horizontal=True, label_visibility="collapsed", key="mode")
-    m = folium.Map(location=(37.775, -122.43), zoom_start=12, tiles="OpenStreetMap")
+    # Auto mode with a GPS fix: open on the user; otherwise the default overview
+    center = user if src.startswith("Auto") and user else (37.775, -122.43)
+    m = folium.Map(location=center, zoom_start=12, tiles="OpenStreetMap")
     # st_folium sets #map_div to an inline `height` px; make it fill the (CSS-resized) iframe instead
     m.get_root().header.add_child(
         folium.Element("<style>html,body{height:100%;margin:0;overflow:hidden}#map_div,#map_div2,.folium-map{height:100vh!important}</style>")
