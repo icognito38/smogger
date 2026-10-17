@@ -1,0 +1,14 @@
+[
+  "backend/ingestion/tests/test_ingestion.py::test_next_midnight_uses_london_timezone",
+  "backend/ingestion/tests/test_ingestion.py::test_parses_standardized_hotspot_fields",
+  "backend/ingestion/tests/test_ingestion.py::test_tries_keys_in_order_until_one_succeeds",
+  "backend/tests/test_smoke_dispersion.py::test_accepts_notebook_field_names_and_converts_miles",
+  "backend/tests/test_smoke_dispersion.py::test_cities_are_ranked_by_risk_score_descending",
+  "backend/tests/test_smoke_dispersion.py::test_downwind_location_is_flagged",
+  "backend/tests/test_smoke_dispersion.py::test_endpoint_contract_has_only_city_impacts",
+  "backend/tests/test_smoke_dispersion.py::test_geojson_plume_is_a_closed_polygon",
+  "backend/tests/test_smoke_dispersion.py::test_larger_distance_reduces_impact",
+  "backend/tests/test_smoke_dispersion.py::test_pm25_decreases_with_distance",
+  "backend/tests/test_smoke_dispersion.py::test_returns_percentage_risk_without_recalculating_trajectory",
+  "backend/tests/test_smoke_dispersion.py::test_smoke_moves_downwind"
+]
