@@ -1,5 +1,6 @@
 import folium
 import streamlit as st
+from folium.plugins import HeatMap
 from streamlit_folium import st_folium
 
 st.set_page_config(page_title="Wildfire & Smog Intelligence Platform", layout="wide")
@@ -9,7 +10,7 @@ st.markdown(
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 :root { --bg:#14181d; --panel:#1c222a; --line:#38424f; --text:#e6e9ed; --mute:#98a2b0;
-        --crimson:#a4161a; --amber:#c98a0b; --slate:#4a6fa5; --ok:#3f7d58; --top:200px; --foot:88px; }
+        --crimson:#a4161a; --amber:#c98a0b; --slate:#4a6fa5; --ok:#3f7d58; --top:200px; --foot:88px; --radio:44px; }
 html, body, [class*="css"], .stApp { font-family:'Inter', system-ui, sans-serif; }
 .stApp { background:var(--bg); color:var(--text); }
 header[data-testid="stHeader"], footer { display:none; }
@@ -36,7 +37,7 @@ header[data-testid="stHeader"], footer { display:none; }
 .sys { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:6px; }
 .sys .card { border-top-width:2px; padding:5px 10px; } .sys .v { font-size:1rem; }
 /* vertical fill: iframe + advisory pane track the viewport height */
-iframe[title="streamlit_folium.st_folium"] { height:calc(100vh - var(--top)) !important; min-height:420px; border:1px solid var(--line); display:block; }
+iframe[title="streamlit_folium.st_folium"] { height:calc(100vh - var(--top) - var(--radio)) !important; min-height:380px; border:1px solid var(--line); display:block; }
 .st-key-advisory { height:calc(100vh - var(--top) - var(--foot)) !important; min-height:420px; overflow-y:auto; border:1px solid var(--line); background:var(--panel); padding:4px 12px; }
 div[data-testid="stSlider"] label p, .stButton button { font-size:.78rem; text-transform:uppercase; letter-spacing:.05em; }
 .stButton button { border-radius:0; background:var(--panel); border:1px solid var(--line); color:var(--text); width:100%; }
@@ -100,6 +101,31 @@ def plume(h):
     return side(1) + side(-1)[::-1]
 
 
+def get_heatmap_data(h):
+    """[lat, lon, weight] points spreading from the ignition along the wind path; intensity tracks PM2.5."""
+    dx, dy = OAKRIDGE[0] - IGNITION[0], OAKRIDGE[1] - IGNITION[1]
+    n = (dx * dx + dy * dy) ** 0.5
+    ux, uy = dx / n, dy / n
+    px, py = uy, -ux
+    peak = PM25[h] / max(PM25)
+    if h == 0:
+        return [[*IGNITION, peak]]
+    length = n * REACH_KM[h] / 8.7
+    half = 0.004 + 0.0022 * REACH_KM[h]
+    pts = []
+    for i in range(14):
+        t = i / 13
+        w = peak * (1 - 0.6 * t)  # concentration falls off downwind
+        spread = half * (0.3 + 0.7 * t)
+        for c in (-1.0, -0.5, 0, 0.5, 1.0):
+            pts.append([
+                IGNITION[0] + ux * length * t + px * spread * c,
+                IGNITION[1] + uy * length * t + py * spread * c,
+                w * (1 - 0.5 * abs(c)),
+            ])
+    return pts
+
+
 def card(label, value, delta, cls=""):
     return f'<div class="card {cls}"><div class="l">{label}</div><div class="v">{value}</div><div class="d">{delta}</div></div>'
 
@@ -127,6 +153,8 @@ st.markdown(
 left, right = st.columns([2, 1])
 
 with left:
+    mode = st.radio("Map display mode", ["Wildfire Plume & Spread", "Air Quality (AQI) Heat Map"],
+                    horizontal=True, label_visibility="collapsed", key="mode")
     m = folium.Map(location=(37.775, -122.43), zoom_start=12, tiles="OpenStreetMap")
     # st_folium sets #map_div to an inline `height` px; make it fill the (CSS-resized) iframe instead
     m.get_root().header.add_child(
@@ -143,7 +171,10 @@ with left:
         tooltip="Oakridge District",
         icon=folium.Icon(color="blue", icon="home", prefix="fa"),
     ).add_to(m)
-    if h > 0:
+    if mode.startswith("Air"):
+        HeatMap(get_heatmap_data(h), radius=38, blur=28, min_opacity=0.25, max_val=1.0,
+                gradient={0.2: "#4a6fa5", 0.5: "#c98a0b", 0.8: "#c2410c", 1.0: "#7a0f12"}).add_to(m)
+    elif h > 0:
         folium.Polygon(
             plume(h),
             color="#7a0f12",
@@ -153,7 +184,7 @@ with left:
             fill_opacity=0.45,
             tooltip=f"Hour {h}: {HECTARES[h]} ha, PM2.5 {PM25[h]} ug/m3, reach {REACH_KM[h]} km",
         ).add_to(m)
-    st_folium(m, use_container_width=True, height=560, returned_objects=[], key=f"map_{h}")
+    st_folium(m, use_container_width=True, height=560, returned_objects=[], key=f"map_{mode}_{h}")
 
 with right:
     with st.container(key="advisory", height=560):
