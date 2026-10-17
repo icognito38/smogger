@@ -1,6 +1,7 @@
 import folium
 import streamlit as st
 from folium.plugins import HeatMap
+from math import asin, cos, radians, sin, sqrt
 from streamlit_folium import st_folium
 
 st.set_page_config(page_title="Wildfire & Smog Intelligence Platform", layout="wide")
@@ -10,7 +11,7 @@ st.markdown(
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 :root { --bg:#14181d; --panel:#1c222a; --line:#38424f; --text:#e6e9ed; --mute:#98a2b0;
-        --crimson:#a4161a; --amber:#c98a0b; --slate:#4a6fa5; --ok:#3f7d58; --top:200px; --foot:88px; --radio:44px; }
+        --crimson:#a4161a; --amber:#c98a0b; --slate:#4a6fa5; --ok:#3f7d58; --top:200px; --foot:88px; --radio:44px; --pre:190px; }
 html, body, [class*="css"], .stApp { font-family:'Inter', system-ui, sans-serif; }
 .stApp { background:var(--bg); color:var(--text); }
 header[data-testid="stHeader"], footer { display:none; }
@@ -27,6 +28,9 @@ header[data-testid="stHeader"], footer { display:none; }
 .badge.crit { background:var(--crimson); } .badge.warn { background:var(--amber); } .badge.ok { background:var(--ok); }
 .zone { background:var(--panel); border:1px solid var(--line); border-left:4px solid var(--amber);
         padding:6px 12px; margin-bottom:6px; font-size:.85rem; }
+.alert { border:1px solid var(--line); border-left:6px solid var(--slate); background:var(--panel); padding:8px 12px; font-size:.84rem; min-height:96px; box-sizing:border-box; }
+.alert.crit { border-left-color:var(--crimson); } .alert.ok { border-left-color:var(--ok); }
+.alert b.t { display:block; font-size:.78rem; text-transform:uppercase; letter-spacing:.06em; margin-bottom:3px; }
 .stTabs [data-baseweb="tab-list"] { gap:0; border-bottom:1px solid var(--line); }
 .stTabs [data-baseweb="tab"] { background:var(--panel); border:1px solid var(--line); border-bottom:none;
         padding:6px 14px; font-size:.78rem; font-weight:600; text-transform:uppercase; letter-spacing:.05em; color:var(--mute); }
@@ -38,7 +42,7 @@ header[data-testid="stHeader"], footer { display:none; }
 .sys .card { border-top-width:2px; padding:5px 10px; } .sys .v { font-size:1rem; }
 /* vertical fill: iframe + advisory pane track the viewport height */
 iframe[title="streamlit_folium.st_folium"] { height:calc(100vh - var(--top) - var(--radio)) !important; min-height:380px; border:1px solid var(--line); display:block; }
-.st-key-advisory { height:calc(100vh - var(--top) - var(--foot)) !important; min-height:420px; overflow-y:auto; border:1px solid var(--line); background:var(--panel); padding:4px 12px; }
+.st-key-advisory { height:calc(100vh - var(--top) - var(--foot) - var(--pre)) !important; min-height:420px; overflow-y:auto; border:1px solid var(--line); background:var(--panel); padding:4px 12px; }
 div[data-testid="stSlider"] label p, .stButton button { font-size:.78rem; text-transform:uppercase; letter-spacing:.05em; }
 .stButton button { border-radius:0; background:var(--panel); border:1px solid var(--line); color:var(--text); width:100%; }
 .stButton button:hover { border-color:var(--crimson); color:#fff; }
@@ -126,6 +130,36 @@ def get_heatmap_data(h):
     return pts
 
 
+LOCATIONS = {
+    "Inside Plume / Affected Zone (Oakridge District / Marlow Heights)": OAKRIDGE,
+    "Outside Plume / Safe Zone (Downtown SF / Remote)": (37.7879, -122.4075),
+}
+
+
+def km_between(a, b):
+    la1, lo1, la2, lo2 = map(radians, (*a, *b))
+    x = sin((la2 - la1) / 2) ** 2 + cos(la1) * cos(la2) * sin((lo2 - lo1) / 2) ** 2
+    return 2 * 6371 * asin(sqrt(x))
+
+
+def location_alert(loc, h):
+    """Returns (css class, title, body) for the selected test location at forecast hour h."""
+    where = LOCATIONS[loc]
+    dist = km_between(where, IGNITION)
+    if where == OAKRIDGE:
+        eta = next((i for i, r in enumerate(REACH_KM) if r >= km_between(where, IGNITION)), None)
+        if eta is not None and h >= eta:
+            return "crit", "Urgent: Evacuation Order", (
+                f"Smoke plume is over your location (PM2.5 {PM25[h]} ug/m3). Evacuate via Route 9 southbound "
+                "if ordered; otherwise shelter in place with windows sealed.")
+        return "crit", "Urgent: Evacuation Alert", (
+            f"Your location is inside the projected plume path. Smoke arrives at about Hour {eta} "
+            f"({eta - h} h from now). Prepare to evacuate now; the fire is {dist:.1f} km away in Sector 4.")
+    return "ok", "Safety Alert: Outside Affected Zone", (
+        f"The nearest fire is {dist:.1f} km away in Sector 4, United States. "
+        "Your location is outside the projected plume for the 6-hour forecast. No action required; keep monitoring.")
+
+
 def card(label, value, delta, cls=""):
     return f'<div class="card {cls}"><div class="l">{label}</div><div class="v">{value}</div><div class="d">{delta}</div></div>'
 
@@ -187,6 +221,9 @@ with left:
     st_folium(m, use_container_width=True, height=560, returned_objects=[], key=f"map_{mode}_{h}")
 
 with right:
+    loc = st.selectbox("Test User Location", list(LOCATIONS), key="loc")
+    cls, title, body = location_alert(loc, h)
+    st.markdown(f'<div class="alert {cls}"><b class="t">{title}</b>{body}</div>', unsafe_allow_html=True)
     with st.container(key="advisory", height=560):
         gov, pub = st.tabs(["Government / Municipal Command", "Public / Citizen Advisory"])
         with gov:
