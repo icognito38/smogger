@@ -14,11 +14,18 @@
     #map { width: 100%; max-width: 600px; height: 400px; margin: 20px auto; border: 2px solid #333; }
     .red { color: red; }
     .green { color: green; }
+    button { font-size: 16px; padding: 10px 20px; cursor: pointer; }
+    #result { font-size: 20px; font-weight: bold; margin: 15px auto; max-width: 600px; padding: 10px; }
+    #result.danger { background: red; color: white; }
+    #result.safe { background: #d4f5d4; color: green; }
   </style>
 </head>
 <body>
   <h1>Wildfire Smog Map</h1>
   <p><span class="red">&#9679;</span> High smog &nbsp;&nbsp; <span class="green">&#9679;</span> Air OK</p>
+
+  <button onclick="checkMyLocation()">Check my location (GPS)</button>
+  <div id="result"></div>
 
   <div id="map"></div>
   <p id="status">Loading...</p>
@@ -35,6 +42,7 @@
     // One layer that holds all the regions, so we can clear and redraw it
     const shapes = L.featureGroup().addTo(map);
     let firstLoad = true;
+    let myMarker = null;   // the blue dot that shows where you are
 
     async function loadData() {
       try {
@@ -73,6 +81,60 @@
         document.getElementById("status").textContent =
           "Could not load data. Is app.py running?";
       }
+    }
+
+    function showResult(text, type) {
+      const box = document.getElementById("result");
+      box.textContent = text;
+      box.className = type;   // "danger", "safe" or "" (no colour)
+    }
+
+    function checkMyLocation() {
+      if (!navigator.geolocation) {
+        showResult("This browser does not support GPS.", "");
+        return;
+      }
+
+      showResult("Getting your GPS location...", "");
+
+      navigator.geolocation.getCurrentPosition(
+        async function (position) {
+          const lat = position.coords.latitude;
+          const lon = position.coords.longitude;
+
+          // Show your position on the map
+          if (myMarker) { map.removeLayer(myMarker); }
+          myMarker = L.circleMarker([lat, lon], {
+            radius: 8, color: "white", weight: 2, fillColor: "blue", fillOpacity: 1
+          }).addTo(map).bindPopup("You are here");
+          map.setView([lat, lon], 8);
+
+          // Ask app.py if this position is inside a danger zone
+          try {
+            const response = await fetch("/check", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ lat: lat, lon: lon })
+            });
+            const info = await response.json();
+            if (!response.ok) { throw new Error(info.error); }
+
+            if (info.danger) {
+              showResult("DANGER ZONE! You are in " + info.region + " (AQI " + info.aqi + "). It is NOT safe to stay here.", "danger");
+            } else if (info.region) {
+              showResult("You are in " + info.region + " (AQI " + info.aqi + "). Air is OK.", "safe");
+            } else {
+              showResult("You are outside all mapped regions. We have no smog data for your location.", "");
+            }
+          } catch (error) {
+            showResult("Could not check your location. Is app.py running?", "");
+          }
+        },
+        function (error) {
+          showResult("Could not get your GPS location: " + error.message, "");
+        },
+        { enableHighAccuracy: true, timeout: 15000 }
+      );
     }
 
     loadData();

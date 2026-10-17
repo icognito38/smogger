@@ -29,6 +29,22 @@ regions = [
 ]
 
 
+def point_in_polygon(lat, lon, polygon):
+    # Ray casting: draw a line from the point to the east and count how many
+    # polygon edges it crosses. An odd number means the point is inside.
+    inside = False
+    j = len(polygon) - 1
+    for i in range(len(polygon)):
+        lat_i, lon_i = polygon[i]
+        lat_j, lon_j = polygon[j]
+        if (lat_i > lat) != (lat_j > lat):
+            crossing_lon = (lon_j - lon_i) * (lat - lat_i) / (lat_j - lat_i) + lon_i
+            if lon < crossing_lon:
+                inside = not inside
+        j = i
+    return inside
+
+
 @app.route("/")
 def home():
     # Serve index.html from the same folder as app.py
@@ -42,6 +58,26 @@ def get_data():
     for r in regions:
         result.append({**r, "high": r["aqi"] > HIGH_SMOG_AQI})
     return jsonify(result)
+
+
+@app.route("/check", methods=["POST"])
+def check_location():
+    # Receive the GPS position from the page: {"lat": ..., "lon": ...}
+    # and say if it is inside a danger zone (a region with AQI above the limit)
+    data = request.get_json(silent=True)
+
+    try:
+        lat = float(data["lat"])
+        lon = float(data["lon"])
+    except (KeyError, TypeError, ValueError):
+        return jsonify(error="Send lat and lon as numbers"), 400
+
+    for r in regions:
+        if point_in_polygon(lat, lon, r["polygon"]):
+            return jsonify(region=r["name"], aqi=r["aqi"], danger=r["aqi"] > HIGH_SMOG_AQI)
+
+    # The position is not inside any region we have data for
+    return jsonify(region=None, aqi=None, danger=False)
 
 
 @app.route("/data", methods=["POST"])
