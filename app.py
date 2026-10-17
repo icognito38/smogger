@@ -9,15 +9,12 @@ st.markdown(
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 :root { --bg:#14181d; --panel:#1c222a; --line:#38424f; --text:#e6e9ed; --mute:#98a2b0;
-        --crimson:#a4161a; --amber:#c98a0b; --slate:#4a6fa5; --ok:#3f7d58; }
+        --crimson:#a4161a; --amber:#c98a0b; --slate:#4a6fa5; --ok:#3f7d58; --top:200px; --foot:88px; }
 html, body, [class*="css"], .stApp { font-family:'Inter', system-ui, sans-serif; }
 .stApp { background:var(--bg); color:var(--text); }
 header[data-testid="stHeader"], footer { display:none; }
-.block-container { padding:0.6rem 1.2rem 0.4rem 1.2rem; max-width:100%; }
-.banner { display:flex; justify-content:space-between; align-items:center; background:var(--panel);
-          border:1px solid var(--line); border-left:6px solid var(--crimson); padding:8px 16px; }
-.banner h1 { font-size:1.15rem; font-weight:700; letter-spacing:.04em; text-transform:uppercase; margin:0; color:var(--text); }
-.banner span { font-size:.72rem; color:var(--mute); letter-spacing:.06em; text-transform:uppercase; }
+.block-container { padding:0.6rem 1.2rem 0.3rem 1.2rem; max-width:100%; }
+[data-testid="stVerticalBlock"] { gap:0.5rem; }
 .cards { display:grid; grid-template-columns:repeat(4,1fr); gap:8px; margin:8px 0; }
 .card { background:var(--panel); border:1px solid var(--line); border-top:3px solid var(--slate); padding:8px 12px; }
 .card.crit { border-top-color:var(--crimson); } .card.warn { border-top-color:var(--amber); }
@@ -39,8 +36,8 @@ header[data-testid="stHeader"], footer { display:none; }
 .sys { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:6px; }
 .sys .card { border-top-width:2px; padding:5px 10px; } .sys .v { font-size:1rem; }
 /* vertical fill: iframe + advisory pane track the viewport height */
-iframe[title="streamlit_folium.st_folium"] { height:calc(100vh - 290px) !important; min-height:420px; border:1px solid var(--line); }
-.st-key-advisory { height:calc(100vh - 290px) !important; min-height:420px; overflow-y:auto; border:1px solid var(--line); background:var(--panel); padding:4px 12px; }
+iframe[title="streamlit_folium.st_folium"] { height:calc(100vh - var(--top)) !important; min-height:420px; border:1px solid var(--line); display:block; }
+.st-key-advisory { height:calc(100vh - var(--top) - var(--foot)) !important; min-height:420px; overflow-y:auto; border:1px solid var(--line); background:var(--panel); padding:4px 12px; }
 div[data-testid="stSlider"] label p, .stButton button { font-size:.78rem; text-transform:uppercase; letter-spacing:.05em; }
 .stButton button { border-radius:0; background:var(--panel); border:1px solid var(--line); color:var(--text); width:100%; }
 .stButton button:hover { border-color:var(--crimson); color:#fff; }
@@ -109,12 +106,6 @@ def card(label, value, delta, cls=""):
 
 # ---------- header, timeline, metrics ----------
 h = st.session_state.hour
-st.markdown(
-    '<div class="banner"><h1>Wildfire &amp; Smog Intelligence Platform</h1>'
-    "<span>IBM Z Datathon 2026 &nbsp;|&nbsp; Emergency Operations Display &nbsp;|&nbsp; LinuxONE</span></div>",
-    unsafe_allow_html=True,
-)
-
 t1, t2 = st.columns([6, 1], vertical_alignment="bottom")
 t1.slider("Forecast timeline (hours from predicted ignition)", 0, 6, key="hour", format="Hour %d")
 t2.button("Reset to Hour 0", on_click=reset_hour)
@@ -137,6 +128,10 @@ left, right = st.columns([2, 1])
 
 with left:
     m = folium.Map(location=(37.775, -122.43), zoom_start=12, tiles="OpenStreetMap")
+    # st_folium sets #map_div to an inline `height` px; make it fill the (CSS-resized) iframe instead
+    m.get_root().header.add_child(
+        folium.Element("<style>html,body{height:100%;margin:0;overflow:hidden}#map_div,#map_div2,.folium-map{height:100vh!important}</style>")
+    )
     folium.Marker(
         IGNITION,
         tooltip="Predicted ignition origin",
