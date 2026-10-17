@@ -10,6 +10,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import requests
+import plume
 
 FIRE = (49.0, -73.0)  # Quebec epicentre (assumed)
 CITIES = {
@@ -31,6 +32,7 @@ FEATURES = [
     "Along_Wind_Roll12", "PM2_5", "PM2_5_Roll6",
     "PM2_5_Lag1", "PM2_5_Lag3", "PM2_5_Lag6", "PM2_5_Lag12", "PM2_5_Trend3",
     "Hour", "Upstream_PM25_Lag3", "Upstream_PM25_Lag6",
+    "Plume_Now", "Plume_6h",
 ]
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_CSV = os.path.join(HERE, "smokeshield_data.csv")
@@ -74,6 +76,8 @@ def fetch_raw():
 
 def build_features(raw):
     df = raw.sort_values(["City", "Time"]).reset_index(drop=True)
+    pf = plume.city_features(plume.simulate(raw, CITIES, plume.fetch_fire_wind()))
+    df = df.merge(pf, on=["City", "Time"], how="left")
     df["Distance_Miles"] = df["City"].map(lambda c: haversine(*FIRE, CITIES[c]["lat"], CITIES[c]["lon"]))
     brg = df["City"].map(lambda c: bearing(*FIRE, CITIES[c]["lat"], CITIES[c]["lon"]))
     rad = np.radians((df["Wind_Dir_deg"] + 180) % 360 - brg)  # smoke travels toward wind_dir + 180
@@ -157,8 +161,16 @@ def metrics(df):
 
 if __name__ == "__main__":
     data = build_features(fetch_raw())
-    bundle = load_or_train(data)
-    data = score(data, bundle)
-    m = metrics(data)
-    print(f"backend={bundle['backend']}  held-out rows={m['rows']}")
-    print(f"MAE {m['mae']:.2f} vs no-change baseline {m['base_mae']:.2f} ug/m3")
+    d = data.dropna(subset=FEATURES + ["Target"])
+    tr = d[d["Time"] < SPLIT - pd.Timedelta(hours=H)]
+    te = d[d["Time"] >= SPLIT]
+    for name, feats in (("WITHOUT plume", [f for f in FEATURES if not f.startswith("Plume")]),
+                        ("WITH plume", FEATURES)):
+        model, backend = _new_model()
+        model.fit(tr[feats].values, (tr["Target"] - tr["PM2_5"]).values)
+        p = np.clip(te["PM2_5"].values + model.predict(te[feats].values), 0, None)
+        print(f"{name:14s} MAE {np.abs(p - te['Target'].values).mean():.2f}  ({backend})")
+        if name == "WITH plume" and hasattr(model, "feature_importances_"):
+            imp = dict(zip(feats, model.feature_importances_))
+            print("plume feature importance:", {k: round(float(v), 3) for k, v in imp.items() if k.startswith("Plume")})
+    print(f"no-change baseline MAE {np.abs(te['PM2_5'].values - te['Target'].values).mean():.2f}")
