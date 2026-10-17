@@ -29,6 +29,30 @@ def test_next_midnight_uses_london_timezone():
     assert scheduled.minute == 0
 
 
+def test_loads_numbered_keys_from_ingestion_dotenv(monkeypatch):
+    monkeypatch.delenv("FIRMS_MAP_KEYS", raising=False)
+    for number in range(1, 6):
+        monkeypatch.delenv(f"FIRMS_MAP_KEYS{number}", raising=False)
+
+    from ingestion import config
+
+    monkeypatch.setattr(
+        config,
+        "_read_dotenv",
+        lambda path: {
+            "FIRMS_MAP_KEYS1": "'first-key'",
+            "FIRMS_MAP_KEYS2": '"second-key"',
+            "FIRMS_MAP_KEYS3": "third-key",
+        },
+    )
+
+    assert FirmsConfig.from_environment().map_keys == (
+        "first-key",
+        "second-key",
+        "third-key",
+    )
+
+
 class FakeResponse:
     def __init__(self, status_code: int, text: str):
         self.status_code = status_code

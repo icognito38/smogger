@@ -6,16 +6,22 @@ smoke-impact, and frontend modules.
 
 ## Configuration
 
-Map keys must be supplied at runtime and must not be committed:
+Map keys must be supplied at runtime and must not be committed. The collector
+loads `backend\ingestion\.env` automatically:
 
-```powershell
-$env:FIRMS_MAP_KEYS = "key1,key2,key3"
+```text
+FIRMS_MAP_KEYS1='key1'
+FIRMS_MAP_KEYS2='key2'
+FIRMS_MAP_KEYS3='key3'
+FIRMS_MAP_KEYS4='key4'
+FIRMS_MAP_KEYS5='key5'
 ```
 
-Keys are attempted in the order provided. For each key, the client first
-checks the FIRMS data-availability endpoint and then requests the global
-one-day CSV. If a key fails either operation, the next key is tried. Error
-messages identify the key position, never the key value.
+Keys are attempted in numeric order. Environment variables take precedence
+over values in `.env`. For compatibility, a single comma-separated
+`FIRMS_MAP_KEYS` variable is also supported. If a key fails either operation,
+the next key is tried. Error messages identify the key position, never the key
+value.
 
 Do not place the supplied keys in source code, notebooks, JSON, Git history,
 or command output. Store them in a protected environment variable or secret

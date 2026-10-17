@@ -1,4 +1,5 @@
 [
+  "backend/ingestion/tests/test_ingestion.py::test_loads_numbered_keys_from_ingestion_dotenv",
   "backend/ingestion/tests/test_ingestion.py::test_next_midnight_uses_london_timezone",
   "backend/ingestion/tests/test_ingestion.py::test_parses_standardized_hotspot_fields",
   "backend/ingestion/tests/test_ingestion.py::test_tries_keys_in_order_until_one_succeeds",
