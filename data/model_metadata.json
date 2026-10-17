@@ -1,0 +1,1 @@
+{"features": ["Distance_Miles", "Wind_Speed_kmh", "Along_Wind_kmh", "Cross_Wind_kmh", "Along_Wind_Roll12", "PM2_5", "PM2_5_Roll6", "PM2_5_Lag1", "PM2_5_Lag3", "PM2_5_Lag6", "PM2_5_Lag12", "PM2_5_Trend3", "Hour", "Upstream_PM25_Lag3", "Upstream_PM25_Lag6", "Plume_Now", "Plume_6h"]}
