@@ -7,15 +7,15 @@ import requests
 from dotenv import load_dotenv
 
 load_dotenv()
-MAP_KEY = os.getenv("MAP_KEY")
+MAP_KEY = "1f518a4942653d6b8a5976c10a2debdf"
 
 if not MAP_KEY:
     print("MAP_KEY not found. Create a .env file with: MAP_KEY=your_key_here")
     raise SystemExit
 
 # ---------- 1. Fire locations (NASA FIRMS) -> fires.json ----------
-# Area = west, south, east, north (a box around Indonesia). Last number = days (1-5).
-url = f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/{MAP_KEY}/VIIRS_SNPP_NRT/95,-11,141,6/1"
+# Area = west, south, east, north (a box around the UK). Last number = days (1-5).
+url = f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/{MAP_KEY}/VIIRS_SNPP_NRT/-8.7,49.8,1.9,60.9/1"
 
 response = requests.get(url)
 
@@ -41,26 +41,26 @@ print(f"Saved {len(fires)} fire locations to fires.json")
 
 # ---------- 2. Wind in each city (Open-Meteo, no API key needed) -> wind.json ----------
 cities = {
-    "Jakarta": (-6.2088, 106.8456),
-    "Surabaya": (-7.2575, 112.7521),
-    "Bandung": (-6.9175, 107.6191),
-    "Medan": (3.5952, 98.6722),
-    "Semarang": (-6.9667, 110.4167),
-    "Makassar": (-5.1477, 119.4327),
-    "Palembang": (-2.9761, 104.7754),
-    "Denpasar": (-8.6705, 115.2126),
-    "Balikpapan": (-1.2379, 116.8529),
-    "Pontianak": (-0.0263, 109.3425),
-    "Banjarmasin": (-3.3194, 114.5908),
-    "Pekanbaru": (0.5071, 101.4478),
-    "Jambi": (-1.6101, 103.6131),
-    "Palangkaraya": (-2.2161, 113.9135),
-    "Manado": (1.4748, 124.8421),
-    "Jayapura": (-2.5337, 140.7181),
-    "Padang": (-0.9471, 100.4172),
-    "Yogyakarta": (-7.7956, 110.3695),
-    "Ambon": (-3.6954, 128.1814),
-    "Kupang": (-10.1772, 123.6070),
+    "London": (51.5074, -0.1278),
+    "Birmingham": (52.4862, -1.8904),
+    "Manchester": (53.4808, -2.2426),
+    "Leeds": (53.8008, -1.5491),
+    "Glasgow": (55.8642, -4.2518),
+    "Liverpool": (53.4084, -2.9916),
+    "Newcastle": (54.9783, -1.6178),
+    "Sheffield": (53.3811, -1.4701),
+    "Bristol": (51.4545, -2.5879),
+    "Edinburgh": (55.9533, -3.1883),
+    "Cardiff": (51.4816, -3.1791),
+    "Belfast": (54.5973, -5.9301),
+    "Nottingham": (52.9548, -1.1581),
+    "Southampton": (50.9097, -1.4044),
+    "Aberdeen": (57.1497, -2.0943),
+    "Inverness": (57.4778, -4.2247),
+    "Plymouth": (50.3755, -4.1427),
+    "Norwich": (52.6309, 1.2974),
+    "Cambridge": (52.2053, 0.1218),
+    "Exeter": (50.7184, -3.5339),
 }
 
 names = list(cities.keys())
