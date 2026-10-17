@@ -62,6 +62,42 @@ def test_endpoint_contract_has_only_city_impacts():
     assert "forecast" not in result
 
 
+def test_cities_are_ranked_by_risk_score_descending():
+    request = make_request()
+    request.cities.extend(
+        [
+            PredictedCity(
+                name="Highest risk",
+                latitude=35,
+                longitude=-118,
+                arrival_hour=3,
+                distance_from_fire_km=50,
+                path_probability=1,
+                Predicted_PM25_6h=150,
+            ),
+            PredictedCity(
+                name="Lowest risk",
+                latitude=36,
+                longitude=-118,
+                arrival_hour=5,
+                distance_from_fire_km=200,
+                path_probability=0.5,
+                Predicted_PM25_6h=10,
+            ),
+        ]
+    )
+
+    result = assess_smoke_impact(request)
+
+    assert [city.name for city in result.cities] == [
+        "Highest risk",
+        "City A",
+        "Lowest risk",
+    ]
+    assert [city.rank for city in result.cities] == [1, 2, 3]
+    assert [city.model_dump()["rank"] for city in result.cities] == [1, 2, 3]
+
+
 def test_accepts_notebook_field_names_and_converts_miles():
     request = SmokeImpactRequest(
         cities=[

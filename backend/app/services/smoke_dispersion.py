@@ -58,6 +58,7 @@ def assess_smoke_impact(request: SmokeImpactRequest) -> SmokeImpactResponse:
         confidence = round(city.path_probability * 100, 2)
         impacts.append(
             CitySmokeImpact(
+                rank=1,
                 name=city.name,
                 latitude=city.latitude,
                 longitude=city.longitude,
@@ -73,4 +74,11 @@ def assess_smoke_impact(request: SmokeImpactRequest) -> SmokeImpactResponse:
             )
         )
 
-    return SmokeImpactResponse(cities=impacts, model_note=MODEL_NOTE)
+    impacts.sort(
+        key=lambda city: (-city.risk_score_percent, -city.estimated_pm25, city.name)
+    )
+    ranked_impacts = []
+    for rank, city in enumerate(impacts, start=1):
+        ranked_impacts.append(city.model_copy(update={"rank": rank}))
+
+    return SmokeImpactResponse(cities=ranked_impacts, model_note=MODEL_NOTE)

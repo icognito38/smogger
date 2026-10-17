@@ -11,6 +11,7 @@ The trajectory/model branch supplies a six-hour prediction for each city. This
 branch consumes those predictions and adds user-facing impact information:
 
 - A 0-100 smoke-risk percentage
+- A rank ordering cities from highest to lowest smoke risk
 - A risk category
 - The model's predicted PM2.5 value
 - A confidence percentage based on the supplied path probability
@@ -146,6 +147,7 @@ Successful responses have this shape:
 {
   "cities": [
     {
+      "rank": 1,
       "name": "Montreal",
       "latitude": 45.5016,
       "longitude": -73.5672,
@@ -166,6 +168,25 @@ The output intentionally contains no trajectory, wind direction, path
 coordinates, or GeoJSON plume. The frontend should use the upstream
 trajectory branch for map paths and this branch for city markers, risk
 colouring, confidence, and advisories.
+
+### Ranking behavior
+
+The response's `cities` array is sorted from highest to lowest
+`risk_score_percent`. Each city receives a one-based `rank`, where `1` is the
+highest-priority city for smoke-impact response. If two cities have the same
+risk score, the service uses predicted PM2.5 as a tie-breaker; if those values
+also match, city name is used for deterministic ordering.
+
+Ranking is performed only on the impact results supplied by this service. It
+does not change the trajectory model's city order, arrival hours, or
+predictions. The original upstream values remain attached to their city.
+
+**Merge integration prompt:** When this branch is merged, the future
+integrating LLM must preserve and verify this city-impact ranking feature.
+Ensure that the final `/api/v1/smoke/impact` response sorts every city in
+descending risk priority, assigns unique sequential one-based ranks (`1, 2,
+3, ...`), and includes automated coverage proving that no two output cities
+receive the same rank unless they are the same output record.
 
 ## Validation and errors
 

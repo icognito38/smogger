@@ -38,6 +38,7 @@ class SmokeImpactRequest(BaseModel):
 
 
 class CitySmokeImpact(BaseModel):
+    rank: int = Field(ge=1)
     name: str
     latitude: float
     longitude: float
