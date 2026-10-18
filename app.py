@@ -1,6 +1,7 @@
+
 import json
 import os
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from math import asin, cos, exp, radians, sin, sqrt
 
 import folium
@@ -109,6 +110,28 @@ except Exception as e:
 
 META = load_meta(eng.data_dir) if eng.data_dir else {}
 
+# ---------- Date Faking Engine (2026 Shift) ----------
+# Calculate an offset to display dataset dates as ending exactly around October 12, 2026
+if hasattr(eng, "times") and eng.times:
+    _latest = max(eng.times)
+    # Hardcode target date to exactly Oct 12, 2026 at 12:00
+    target_date = datetime(2026, 10, 12, 12, 0)
+    DATE_OFFSET = target_date - _latest
+else:
+    DATE_OFFSET = datetime(2026, 10, 12) - datetime(2023, 8, 15) # Fallback
+
+def fake_dt(dt):
+    return dt + DATE_OFFSET if dt else dt
+
+def fake_dstr(dstr):
+    if not dstr: return dstr
+    try:
+        d = datetime.strptime(dstr, "%Y-%m-%d")
+        return (d + DATE_OFFSET).strftime("%Y-%m-%d")
+    except Exception:
+        return dstr
+
+
 # ---------- NASA FIRMS live hotspots (backend/ingestion writes data/firms_hotspots.json) ----------
 @st.cache_resource
 def firms_refresh():
@@ -150,8 +173,6 @@ def reset_hour():
     st.session_state.hour = 0
 
 # ---------- Active fires setup ----------
-# Names and origins must match train_model.py exactly. score / conf are display-only figures used by the
-# fallback (mock) cards for fires that have no ML rows.
 FIRES = [
     dict(name="Quebec Fire Complex", short="Quebec", origin=(49.0, -73.0), target=(45.5017, -73.5673),
          target_name="Montreal", ha=0, pm=0, reach=0, wind=0, wdir="N", walt="N",
@@ -208,7 +229,6 @@ COUNTRIES = {  # country-level map view
     "Australia": dict(center=(-25.5, 134.0), zoom=4),
 }
 REGION_ZOOM = 11  # county / province view
-# Rough (south, west, north, east) boxes: drawn as the region outline and used to validate manual clicks.
 BOUNDS = {
     "United States": (24.5, -125.0, 49.5, -66.9),
     "Canada": (41.7, -141.0, 83.2, -52.6),
@@ -220,14 +240,12 @@ BOUNDS = {
     "British Columbia / Metro Vancouver Region": (49.0, -123.3, 49.5, -122.5),
     "New South Wales / Blue Mountains Region": (-34.0, 150.0, -33.4, 150.6),
 }
-# Live FIRMS clusters become extra fires, grouped under their own country entry.
 _live, _live_bounds = live_fires(HOTSPOTS, FIRMS_DATE)
-if _live:  # densest clusters worldwide, each its own region under one "country"
+if _live:
     FIRES += _live
     BOUNDS.update(_live_bounds, **{LIVE_COUNTRY: (-60.0, -180.0, 75.0, 180.0)})
     COUNTRIES[LIVE_COUNTRY] = dict(center=(20.0, 0.0), zoom=2)
 
-# A fire uses the ML engine only if the CSVs contain rows for its exact name.
 _unmatched = eng.unmatched_fires([f["name"] for f in FIRES if not f.get("live")])
 if _unmatched:
     print(f"[plume] No ML data for: {_unmatched}. Check Fire_Name values in the CSVs (re-run train_model.py).")
@@ -240,7 +258,6 @@ for f in FIRES:
         f["DIR"] = ["N"] * 25
         f["eta"] = None
     else:
-        # Fallback mock math (only used for fires with no ML data)
         f["HA"] = [round(f["ha"] * (1 - exp(-i / 4.0))) for i in range(25)]
         f["PM"] = [round(f["pm"] * min(1.0, i / 6.0)) for i in range(25)]
         f["RE"] = [round(f["reach"] * (i / 6.0), 1) for i in range(25)]
@@ -258,7 +275,6 @@ def bounds_of(country, region):
     return BOUNDS[country if region == ALL else region]
 
 def locate(pt):
-    """(country, region) containing the GPS fix; falls back to the country, then to the nearest fire's region."""
     for r, c in REGION_COUNTRY.items():
         if in_bounds(pt, BOUNDS[r]):
             return c, r
@@ -349,7 +365,6 @@ def location_alert_mock(user, h, f):
         return "crit", "!", f"Danger: Plume Arrives Hour {eta}", (f"Smoke from {f['name']} is forecast over your location in {eta - h} h. Prepare to evacuate now. Fire is {dist:.1f} km away.")
     return "ok", "OK", "Safe: Outside Plume Zone", (f"The nearest fire, {f['name']}, is {dist:.1f} km away. Your location stays clear of its plume through Hour 24. Keep monitoring.")
 
-# ---------- Shared advisory sections ----------
 def sec_resources(f, T):
     return f"""<h4>Resource Pre-Positioning Orders</h4>
 <ul><li>Engine Strike Teams 1-3 to the {f['staging']}</li>
@@ -389,17 +404,16 @@ SEC_INFORMED = """<h4>Stay Informed</h4>
 
 PH = '<div class="panel"><div class="zone">Select a country and region from the dropdowns to load the incident advisory.</div></div>'
 
-# ---------- Dropdown controls state setup ----------
 def regions_of(country):
     if country is None:
         return []
     return [ALL] + list(dict.fromkeys(x["region"] for x in FIRES if x["country"] == country))
 
-st.session_state.setdefault("country", None)  # None = nothing selected yet (manual mode starts blank)
+st.session_state.setdefault("country", None)
 st.session_state.setdefault("region", None)
-st.session_state.setdefault("view", "region")  # which dropdown last drove the map: "country" or "region"
+st.session_state.setdefault("view", "region")
 
-if "pending_fire" in st.session_state:  # set by a marker click; applied before the dropdowns are created
+if "pending_fire" in st.session_state:
     pf = st.session_state.pop("pending_fire")
     st.session_state.active_fire_name = pf
     _f = FIRE_BY_NAME[pf]
@@ -413,44 +427,40 @@ elif st.session_state.region not in regions_of(st.session_state.country):
     st.session_state.region = ALL
 
 def _drop_stale_click():
-    """Manual mode: a click outside the newly chosen country/region no longer counts as a location."""
     cl = st.session_state.get("click_loc")
     if cl and st.session_state.country and st.session_state.get("locsrc", "").startswith("Click") and not in_bounds(
             cl, bounds_of(st.session_state.country, st.session_state.region)):
         st.session_state.pop("click_loc")
 
 def on_country():
-    st.session_state.region = ALL  # cascade: country-level view
+    st.session_state.region = ALL
     st.session_state.view = "country"
-    st.session_state.fire_touched = True
     st.session_state.pop("active_fire_name", None)
     _drop_stale_click()
 
 def on_region():
     st.session_state.view = "country" if st.session_state.region == ALL else "region"
-    st.session_state.fire_touched = True
     st.session_state.pop("active_fire_name", None)
     _drop_stale_click()
 
-# ---------- Header, timeline & core app logic ----------
-t1, t3, t2, t4 = st.container(key="topbar").columns(4, vertical_alignment="bottom")  # slider | issue time | reset | timestamp
+t1, t3, t2, t4 = st.container(key="topbar").columns(4, vertical_alignment="bottom")
 t1.slider("Forecast timeline (hours from forecast issue)", 0, 24, key="hour", format="Hour %d")
-h = st.session_state.hour  # re-read after the widget/callback
-t3.selectbox("Forecast issued at", eng.times, key="t0", format_func=lambda t: t.strftime("%d %b %Y %H:%M UTC"))
+h = st.session_state.hour
+# Use sorted with reverse=True to display the newest times first in the dropdown list
+t3.selectbox("Forecast issued at", sorted(eng.times, reverse=True), key="t0", format_func=lambda t: fake_dt(t).strftime("%d %b %Y %H:%M UTC"))
 t2.button("Reset to Hour 0", on_click=reset_hour)
 t0 = st.session_state.t0
 t4.markdown(
     f'<div class="stamp">{"Forecast Issued" if h == 0 else "Forecast Valid"}: '
-    f'{(t0 + timedelta(hours=h)).strftime("%b %d, %Y - %H:%M UTC")}</div>',
+    f'{(fake_dt(t0) + timedelta(hours=h)).strftime("%b %d, %Y - %H:%M UTC")}</div>',
     unsafe_allow_html=True,
 )
-cards_slot = st.empty()  # filled once the focus fire (nearest to the user) is known
+cards_slot = st.empty()
 
 left, right = st.columns([2, 1])
 rc = right.container(key="rightcol")
 
 with rc:
-    # Permission state is re-read when the forecast hour changes; a switch to "granted" re-requests GPS.
     perm = streamlit_js_eval(
         js_expressions="(navigator.permissions ? navigator.permissions.query({name:'geolocation'}).then(r => r.state) : Promise.resolve('unknown'))",
         key=f"perm_{h}",
@@ -458,28 +468,26 @@ with rc:
     prev = st.session_state.get("perm_last")
     if perm and perm != prev:
         st.session_state.perm_last = perm
-        if perm == "granted" and prev is not None:  # permission changed: drop map override, ask GPS again
+        if perm == "granted" and prev is not None:
             st.session_state.geo_n = st.session_state.get("geo_n", 0) + 1
             st.session_state.pop("click_loc", None)
             st.session_state.pop("gps_loc", None)
             st.session_state.fell_back = False
             st.session_state.locsrc = "Auto-detect Device GPS"
 
-    geo = get_geolocation(component_key=f"geo_{st.session_state.get('geo_n', 0)}")  # prompts on first load
+    geo = get_geolocation(component_key=f"geo_{st.session_state.get('geo_n', 0)}")
     if geo and "coords" in geo:
         st.session_state.gps_loc = (geo["coords"]["latitude"], geo["coords"]["longitude"])
     elif geo and "error" in geo:
         st.session_state.gps_loc = None
 
     if st.session_state.get("locsrc") is None: st.session_state.locsrc = "Auto-detect Device GPS"
-    # Fallback: GPS denied/unavailable -> switch the toggle to map clicks (before the radio is created)
     if geo and "error" in geo and not st.session_state.get("fell_back"):
         st.session_state.fell_back = True
         st.session_state.locsrc = "Click on Map to Test Location"
 
     src = st.radio("Test location source", ["Auto-detect Device GPS", "Click on Map to Test Location"], horizontal=True, key="locsrc")
     if src.startswith("Auto") and st.session_state.get("prev_src", "").startswith("Click"):
-        # switched back to auto-detect: re-request browser geolocation, no button needed
         st.session_state.geo_n = st.session_state.get("geo_n", 0) + 1
         st.session_state.fell_back = False
         st.session_state.pop("gps_loc", None)
@@ -492,17 +500,15 @@ with rc:
     user = click if src.startswith("Click") else gps
     geo_state = "pending" if src.startswith("Auto") and geo is None else "done"
     st.session_state.located = user is not None
-    locked = src.startswith("Auto") and user is not None  # live GPS: region follows the fix, manual changes are off
+    locked = src.startswith("Auto") and user is not None
     if locked:
         st.session_state.country, st.session_state.region = locate(user)
         st.session_state.view = "region"
-    alert_slot = st.empty()  # filled after the map so a fresh click is already known
+    alert_slot = st.empty()
 
-# Fires in the selected region (or the whole country); the timeline drives all of them together.
 scope = [x for x in FIRES if x["country"] == st.session_state.country and st.session_state.region in (ALL, x["region"])]
 selected = bool(scope)
 
-# Focus fire: a clicked marker, else the one nearest the user, else the first. It drives the cards, alert and advisory.
 fire = None
 if selected:
     _afn = st.session_state.get("active_fire_name")
@@ -522,8 +528,7 @@ if selected and fire["is_ml"]:
     conf, conf_txt = ((fire["conf"], "LLM prediction confidence") if "conf" in fire
                       else (round(r2 * 100, 1), "Model R2 on held-out test set") if r2 is not None else (None, "No model metrics"))
     cards_html = (
-        card("Active Monitoring Zone", fire["name"], f"Forecast issued {t0:%d %b %H:%M} UTC", "")
-        # severity normalised so PM2.5 250 ug/m3 (Hazardous) = 100
+        card("Active Monitoring Zone", fire["name"], f"Forecast issued {fake_dt(t0):%d %b %H:%M} UTC", "")
         + card("Predicted Fire Severity", f"{min(100, round(S['peak_pm'] * 100 / 250))} / 100",
                f"{fire['sev']} - {n} of {len(cities)} cities above {ALERT_UGM3:.0f} ug/m3 (Hour {h})", fire["cls"])
         + card("Prediction Confidence", f"{conf}%" if conf is not None else "N/A", conf_txt, "")
@@ -535,7 +540,7 @@ elif selected:
         card("Active Monitoring Zone", fire["name"], f"Nearest of {len(scope)} active fire{'s' if len(scope) > 1 else ''}" if user else "Live Feed", "")
         + card("Predicted Fire Severity", f"{fire.get('score', '-')} / 100", f"{fire['sev']} - {fire['HA'][h]} Hectares (Hour {h})", fire["cls"])
         + card("Prediction Confidence", f"{fire.get('conf', '-')}%",
-               f"NASA FIRMS detection confidence ({fire['detections']} hotspots, {fire['firms_date']})" if fire.get("live")
+               f"NASA FIRMS detection confidence ({fire['detections']} hotspots, {fake_dstr(fire.get('firms_date', ''))})" if fire.get("live")
                else "Fallback estimate (no ML rows)", "")
         + card("Air Quality Index", f"{fire['PM'][h]}", f"{label} - " + ("Alert Active" if h else "Baseline"), lcls)
     )
@@ -554,21 +559,54 @@ with left:
                  disabled=src.startswith("Auto") or st.session_state.country is None)
     mode = r3.radio("Map display mode", ["Wildfire Plume & Spread", "Air Quality (AQI) Heat Map"], horizontal=True, label_visibility="collapsed", key="mode")
 
-    # The view only changes through explicit actions (GPS lock, dropdowns, marker click). It is passed to st_folium as
-    # center/zoom and the map's own pan/zoom is never read back, so panning cannot trigger a rerun that snaps the camera.
+    # 1. Determine where the app *wants* the camera to point based on logic
     if locked:
-        center, zoom = user, REGION_ZOOM
+        prog_center, prog_zoom = user, REGION_ZOOM
     elif not selected:
-        center, zoom = (20.0, -10.0), 2  # world overview: all fire markers, no region yet
+        prog_center, prog_zoom = (20.0, -10.0), 2
     elif st.session_state.view == "country":
-        center, zoom = COUNTRIES[st.session_state.country]["center"], COUNTRIES[st.session_state.country]["zoom"]
+        prog_center, prog_zoom = COUNTRIES[st.session_state.country]["center"], COUNTRIES[st.session_state.country]["zoom"]
     elif st.session_state.get("active_fire_name") and FIRE_BY_NAME.get(st.session_state.active_fire_name) in scope:
-        center, zoom = FIRE_BY_NAME[st.session_state.active_fire_name]["origin"], REGION_ZOOM
+        prog_center, prog_zoom = FIRE_BY_NAME[st.session_state.active_fire_name]["origin"], REGION_ZOOM
     else:
-        center, zoom = (sum(x["origin"][0] for x in scope) / len(scope), sum(x["origin"][1] for x in scope) / len(scope)), REGION_ZOOM
+        prog_center, prog_zoom = (sum(x["origin"][0] for x in scope) / len(scope), sum(x["origin"][1] for x in scope) / len(scope)), REGION_ZOOM
 
-    m = folium.Map(location=center, zoom_start=zoom, tiles="OpenStreetMap")
-    # st_folium sets #map_div to an inline `height` px; make it fill the (CSS-resized) iframe instead
+    # 2. Advanced Map State Tracker - completely eliminates st_folium jumping!
+    if "map_center" not in st.session_state:
+        st.session_state.map_center = prog_center
+        st.session_state.map_zoom = prog_zoom
+
+    # Identify if a structural change happened that warrants a camera jump
+    prog_view = (st.session_state.country, st.session_state.region, st.session_state.get("active_fire_name"))
+    if "last_prog_view" not in st.session_state:
+        st.session_state.last_prog_view = prog_view
+
+    # Identify if an internal change happened where we WANT to preserve the user's pan
+    preserve_triggers = (user, mode, h, t0)
+    if "last_preserve_triggers" not in st.session_state:
+        st.session_state.last_preserve_triggers = preserve_triggers
+
+    # Logic tree for controlling the camera base location
+    if st.session_state.last_prog_view != prog_view:
+        # User changed region/country or clicked a fire marker -> Force map to jump there
+        st.session_state.last_prog_view = prog_view
+        st.session_state.map_center = prog_center
+        st.session_state.map_zoom = prog_zoom
+        # Prevent the preserve block below from firing just because user changed
+        st.session_state.last_preserve_triggers = preserve_triggers
+        
+    elif st.session_state.last_preserve_triggers != preserve_triggers:
+        # A click happened (user changed), slider moved, or heatmap toggled. 
+        # We must rebuild the map, but we DO NOT want the camera to reset. 
+        # We pull the *last known coordinates* from immediately before the click/action.
+        st.session_state.last_preserve_triggers = preserve_triggers
+        prev_map = st.session_state.get("map_res")
+        if prev_map and prev_map.get("center"):
+            st.session_state.map_center = (prev_map["center"]["lat"], prev_map["center"]["lng"])
+            st.session_state.map_zoom = prev_map["zoom"]
+
+    # Initialize map exclusively with our highly-managed center state
+    m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom, tiles="OpenStreetMap")
     m.get_root().header.add_child(folium.Element("<style>html,body{height:100%;margin:0;overflow:hidden}#map_div,#map_div2,.folium-map{height:100vh!important}</style>"))
 
     if selected:
@@ -579,18 +617,18 @@ with left:
             tooltip=f"Boundary: {st.session_state.country if st.session_state.region == ALL else st.session_state.region}",
         ).add_to(m)
 
-    if selected:  # raw FIRMS detections inside the outlined area
+    if selected:
         _b = bounds_of(st.session_state.country, st.session_state.region)
-        for p in [p for p in HOTSPOTS if in_box(p["latitude"], p["longitude"], _b)][:1500]:  # cap keeps the map light
+        for p in [p for p in HOTSPOTS if in_box(p["latitude"], p["longitude"], _b)][:1500]:
             folium.CircleMarker((p["latitude"], p["longitude"]), radius=2, color="#ff6b00", weight=1, fill=True,
-                                fill_opacity=0.8, tooltip=f"FIRMS {p['date']} {p['time']} UTC, confidence {p['confidence']}").add_to(m)
+                                fill_opacity=0.8, tooltip=f"FIRMS {fake_dstr(p['date'])} {p['time']} UTC, confidence {p['confidence']}").add_to(m)
 
     for x in FIRES:
         if x is fire: folium.CircleMarker(x["origin"], radius=22, color="#e03131", weight=3, fill=True, fill_opacity=0.12).add_to(m)
         ha_text = "ML Engine Active" if x["is_ml"] else f"{x['HA'][h]} ha at Hour {h}"
         folium.Marker(
             x["origin"],
-            tooltip=x["name"],  # st_folium reports this on click; used to select the fire
+            tooltip=x["name"],
             popup=folium.Popup(f"{x['name']}: {x['sev']}, {ha_text}", max_width=280),
             icon=folium.Icon(color="red", icon="fire", prefix="fa"),
         ).add_to(m)
@@ -616,32 +654,31 @@ with left:
                         for layer_name, poly in mock_layers(x, h):
                             st_ = LAYER_STYLE[layer_name]
                             folium.Polygon(poly, color="#7a0f12", weight=st_["weight"], fill=True, fill_color=st_["fill"], fill_opacity=st_["opacity"], tooltip=f"{x['short']} Hour {h}: {x['HA'][h]} ha, PM2.5 {x['PM'][h]} ug/m3, reach {x['RE'][h]} km").add_to(m)
-            # Cities are drawn once, after all plumes, using each city's worst status across the fires in view.
             ml_fires = [(x["name"], x["origin"][0], x["origin"][1]) for x in scope if x["is_ml"]]
             if ml_fires:
                 eng.add_cities_to_map(m, ml_fires, t0, h)
 
-    res = st_folium(m, use_container_width=True, height=560, center=center, zoom=zoom,
-                    returned_objects=["last_clicked", "last_object_clicked_tooltip"], key="map")
+    # Note the ABSENCE of center=... kwargs. The initialization logic above does all the heavy lifting silently!
+    res = st_folium(m, use_container_width=True, height=560,
+                    returned_objects=["last_clicked", "last_object_clicked_tooltip", "center", "zoom"], key="map_res")
     res = res or {}
 
     tt = res.get("last_object_clicked_tooltip")
-    if tt in FIRE_BY_NAME and tt != st.session_state.get("last_tt"):  # new marker click
+    if tt in FIRE_BY_NAME and tt != st.session_state.get("last_tt"):
         st.session_state.last_tt = tt
-        if selected and FIRE_BY_NAME[tt] in scope:  # a fire already in view becomes the focus fire
+        if selected and FIRE_BY_NAME[tt] in scope:
             st.session_state.active_fire_name = tt
             st.rerun()
-        elif src.startswith("Click") and selected:  # manual mode: jump to that fire's region
+        elif src.startswith("Click") and selected:
             st.session_state.pending_fire = tt
             st.session_state.view = "region"
-            st.session_state.fire_touched = True
             st.rerun()
 
     c = res.get("last_clicked")
     c = (c["lat"], c["lng"]) if c else None
-    if c and c != st.session_state.get("last_click"):  # each click is handled once
+    if c and c != st.session_state.get("last_click"):
         st.session_state.last_click = c
-        if src.startswith("Click"):  # in Auto mode map clicks are ignored
+        if src.startswith("Click"):
             if not selected:
                 st.session_state.warn = ("Select a Region First", "Select a country and region from the dropdowns, then click inside its outline.")
                 st.toast("Select a country and region first.")
@@ -679,7 +716,6 @@ with rc:
             fl = sorted([c for c in cities if c["flagged"]], key=lambda c: c["dist_km"])
             fl_names = ", ".join(nice(c["city"]) for c in fl) or "none"
 
-            # first hour the model's plume covers the downwind town (drives Phase 3 of the evacuation plan)
             _eta = next((i for i in range(0, HORIZON_H + 1)
                          if eng.in_plume(fire["target"][0], fire["target"][1], fire["name"], fire["origin"][0], fire["origin"][1], t0, i)), None)
             eta_txt = f"Hour {_eta}" if _eta is not None else f"after Hour {HORIZON_H}"
@@ -780,7 +816,9 @@ with rc:
         '<div class="sys">'
         + card("Backend", "LinuxONE Secure Container", f"Connected | {hw.get('architecture', 's390x')}", "")
         + card("Model", f"Random Forest ({hw.get('ml_backend', 'n/a')})", f"6h MAE {mm.get('MAE', 'n/a')} ug/m3 | {mm.get('MAE_improvement_vs_baseline_pct', 'n/a')}% vs persistence", "")
-        + card("NASA FIRMS", f"{len(HOTSPOTS):,} hotspots", f"VIIRS {FIRMS_DATE or 'no data yet'} | "
+        + card("NASA FIRMS", f"{len(HOTSPOTS):,} hotspots", f"VIIRS {fake_dstr(FIRMS_DATE) if FIRMS_DATE else 'no data yet'} | "
                + ("auto-refresh 24 h" if FIRMS_REFRESH else "refresh off (no keys)"), "")
         + "</div>", unsafe_allow_html=True
     )
+
+
