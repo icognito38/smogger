@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import timedelta
 from math import asin, cos, exp, radians, sin, sqrt
 
 import folium
@@ -8,7 +9,7 @@ from folium.plugins import HeatMap
 from streamlit_folium import st_folium
 from streamlit_js_eval import get_geolocation, streamlit_js_eval
 
-from plume import ALERT_UGM3, HEAT_GRADIENT, PlumeEngine, LAYERS, LAYER_STYLE
+from plume import ALERT_UGM3, HEAT_GRADIENT, HORIZON_H, PlumeEngine, LAYERS, LAYER_STYLE
 
 st.set_page_config(page_title="Wildfire & Smog Intelligence Platform", layout="wide")
 
@@ -34,6 +35,11 @@ header[data-testid="stHeader"], footer { display:none; }
 .badge.crit { background:var(--crimson); } .badge.warn { background:var(--amber); } .badge.ok { background:var(--ok); }
 .zone { background:var(--panel); border:1px solid var(--line); border-left:4px solid var(--amber);
         padding:6px 12px; margin-bottom:6px; font-size:.85rem; }
+/* top bar spans the window: slider takes the free width, the other controls size to their content */
+.st-key-topbar [data-testid="stColumn"] { flex:0 0 auto !important; width:auto !important; min-width:0 !important; }
+.st-key-topbar [data-testid="stColumn"]:first-child { flex:1 1 0 !important; }
+.st-key-topbar [data-testid="stSelectbox"] { min-width:230px; }
+.stamp { text-align:right; line-height:24px; padding-bottom:24px; font-size:.85rem; font-weight:600; letter-spacing:.03em; white-space:nowrap; }
 .alert { margin-bottom:10px; display:flex; align-items:center; gap:16px; border:4px solid var(--slate); background:var(--panel); padding:16px 18px; box-sizing:border-box; }
 .alert .ic { flex:none; width:64px; height:64px; display:flex; align-items:center; justify-content:center; font-size:2.3rem; font-weight:800; color:#fff; background:var(--slate); }
 .alert .t { font-size:1.45rem; font-weight:800; text-transform:uppercase; letter-spacing:.03em; line-height:1.15; }
@@ -79,7 +85,7 @@ div[data-testid="stSlider"] label p, .stButton button { font-size:.78rem; text-t
     unsafe_allow_html=True,
 )
 
-# ---------- ML engine initialisation ----------
+# ---------- ML engine initialisation (real model output) ----------
 DATA_DIR = os.environ.get("SMOKE_DATA_DIR")
 
 @st.cache_resource
@@ -120,6 +126,8 @@ def nice(city):
 def card(label, value, delta, cls=""):
     return f'<div class="card {cls}"><div class="l">{label}</div><div class="v">{value}</div><div class="d">{delta}</div></div>'
 
+ALL = "All regions"  # country-level view
+
 if "hour" not in st.session_state: st.session_state.hour = 0
 if "t0" not in st.session_state: st.session_state.t0 = eng.default_t0()
 
@@ -127,6 +135,8 @@ def reset_hour():
     st.session_state.hour = 0
 
 # ---------- Active fires setup ----------
+# Names and origins must match train_model.py exactly. score / conf are display-only figures used by the
+# fallback (mock) cards for fires that have no ML rows.
 FIRES = [
     dict(name="Quebec Fire Complex", short="Quebec", origin=(49.0, -73.0), target=(45.5017, -73.5673),
          target_name="Montreal", ha=0, pm=0, reach=0, wind=0, wdir="N", walt="N",
@@ -136,43 +146,43 @@ FIRES = [
     dict(name="Sector 4 - North Hills", short="Sector 4", origin=(37.8044, -122.4500), target=(37.7450, -122.3850),
          target_name="Oakridge District", ha=45, pm=480, reach=10.2, wind=28, wdir="NW", walt="NNW",
          country="United States", region="California / San Francisco County",
-         sev="High Risk", cls="crit", color="red", staging="North Ridge access road staging area",
+         sev="High Risk", cls="crit", score=78, conf=94.2, color="red", staging="North Ridge access road staging area",
          helibase="Sector 4 helibase", route="Route 9 southbound", hospital="Oakridge Community Hospital",
          avoid="Ridge Road", nearby="Marlow Heights"),
     dict(name="East Bay Ridge Corridor", short="East Bay Ridge", origin=(37.8350, -122.2100), target=(37.8030, -122.2700),
          target_name="Lakeshore Flats", ha=78, pm=560, reach=9.5, wind=34, wdir="E", walt="ENE",
          country="United States", region="California / Alameda County",
-         sev="Extreme Risk", cls="crit", color="darkred", staging="Grizzly Peak staging area",
+         sev="Extreme Risk", cls="crit", score=91, conf=91.7, color="darkred", staging="Grizzly Peak staging area",
          helibase="Ridge Corridor helibase", route="Route 24 westbound", hospital="Lakeshore Medical Center",
          avoid="Skyline Spur Road", nearby="Hillcrest Terrace"),
     dict(name="Skyline Boulevard", short="Skyline Blvd", origin=(37.6800, -122.4900), target=(37.7200, -122.4300),
          target_name="Bayview Heights", ha=22, pm=310, reach=8.0, wind=21, wdir="SW", walt="WSW",
          country="United States", region="California / San Mateo County",
-         sev="Moderate Risk", cls="warn", color="orange", staging="Skyline summit staging area",
+         sev="Moderate Risk", cls="warn", score=52, conf=88.4, color="orange", staging="Skyline summit staging area",
          helibase="Skyline helibase", route="Route 1 northbound", hospital="Bayview Heights Clinic",
          avoid="Skyline Boulevard", nearby="Crestmoor"),
     dict(name="North Shore Mountains", short="North Shore", origin=(49.3900, -123.0900), target=(49.3300, -123.0000),
          target_name="Burnaby Heights", ha=38, pm=420, reach=10.5, wind=24, wdir="NW", walt="NNW",
          country="Canada", region="British Columbia / Metro Vancouver Region",
-         sev="High Risk", cls="crit", color="purple", staging="Seymour staging area",
+         sev="High Risk", cls="crit", score=74, conf=92.9, color="purple", staging="Seymour staging area",
          helibase="North Shore helibase", route="Highway 1 eastbound", hospital="Burnaby General Hospital",
          avoid="Mount Seymour Parkway", nearby="Capitol Hill"),
     dict(name="Blue Mountains Escarpment", short="Blue Mountains", origin=(-33.7100, 150.3000), target=(-33.7600, 150.3900),
          target_name="Glenbrook Township", ha=120, pm=540, reach=11.0, wind=38, wdir="W", walt="WNW",
          country="Australia", region="New South Wales / Blue Mountains Region",
-         sev="Extreme Risk", cls="crit", color="cadetblue", staging="Great Western Highway staging area",
+         sev="Extreme Risk", cls="crit", score=94, conf=95.1, color="cadetblue", staging="Great Western Highway staging area",
          helibase="Blue Mountains helibase", route="Great Western Highway eastbound", hospital="Nepean Rural Hospital",
          avoid="Bells Line of Road", nearby="Blaxland"),
     dict(name="Twin Peaks Brush Fire", short="Twin Peaks", origin=(37.7544, -122.4477), target=(37.7300, -122.4000),
          target_name="Excelsior District", ha=14, pm=260, reach=6.5, wind=22, wdir="NW", walt="NNW",
          country="United States", region="California / San Francisco County",
-         sev="Moderate Risk", cls="warn", color="lightred", staging="Twin Peaks reservoir staging area",
+         sev="Moderate Risk", cls="warn", score=49, conf=86.3, color="lightred", staging="Twin Peaks reservoir staging area",
          helibase="Twin Peaks helipad", route="Route 101 southbound", hospital="Excelsior Medical Center",
          avoid="Portola Drive", nearby="Glen Park"),
     dict(name="Tilden Park Interface", short="Tilden Park", origin=(37.8950, -122.2450), target=(37.8700, -122.2800),
          target_name="Berkeley Flats", ha=31, pm=380, reach=7.0, wind=29, wdir="E", walt="ENE",
          country="United States", region="California / Alameda County",
-         sev="High Risk", cls="crit", color="green", staging="Inspiration Point staging area",
+         sev="High Risk", cls="crit", score=68, conf=90.5, color="green", staging="Inspiration Point staging area",
          helibase="Tilden helibase", route="Route 80 westbound", hospital="Berkeley General Hospital",
          avoid="Grizzly Peak Boulevard", nearby="Kensington Heights"),
 ]
@@ -184,29 +194,64 @@ if _unmatched:
 
 for f in FIRES:
     f["is_ml"] = eng.has_ml(f["name"])
-
+    f["dist"] = km_between(f["origin"], f["target"])
     if f["is_ml"]:
-        f["HA"] = f["PM"] = f["RE"] = f["WIND"] = [0]*25
-        f["DIR"] = ["N"]*25
-        f["dist"] = km_between(f["origin"], f["target"])
+        f["HA"] = f["PM"] = f["RE"] = f["WIND"] = [0] * 25
+        f["DIR"] = ["N"] * 25
         f["eta"] = None
     else:
         # Fallback mock math (only used for fires with no ML data)
-        f["HA"] = [round(f["ha"] * (1 - exp(-i/4.0))) for i in range(25)]
-        f["PM"] = [round(f["pm"] * min(1.0, i/6.0)) for i in range(25)]
-        f["RE"] = [round(f["reach"] * (i/6.0), 1) for i in range(25)]
-        f["WIND"] = [f["wind"] + 3 * sin(i/3.0) for i in range(25)]
+        f["HA"] = [round(f["ha"] * (1 - exp(-i / 4.0))) for i in range(25)]
+        f["PM"] = [round(f["pm"] * min(1.0, i / 6.0)) for i in range(25)]
+        f["RE"] = [round(f["reach"] * (i / 6.0), 1) for i in range(25)]
+        f["WIND"] = [f["wind"] + 3 * sin(i / 3.0) for i in range(25)]
         f["DIR"] = [f["walt"] if i > 12 else f["wdir"] for i in range(25)]
-        f["dist"] = km_between(f["origin"], f["target"])
         f["eta"] = next((i for i, r in enumerate(f["RE"]) if r >= f["dist"]), None)
 
-COUNTRIES = {
-    "Canada": dict(center=(56.0, -96.0), zoom=3),
+COUNTRIES = {  # country-level map view
     "United States": dict(center=(39.5, -98.5), zoom=4),
+    "Canada": dict(center=(56.0, -96.0), zoom=3),
     "Australia": dict(center=(-25.5, 134.0), zoom=4),
 }
-REGION_ZOOM = 11
+REGION_ZOOM = 11  # county / province view
+# Rough (south, west, north, east) boxes: drawn as the region outline and used to validate manual clicks.
+BOUNDS = {
+    "United States": (24.5, -125.0, 49.5, -66.9),
+    "Canada": (41.7, -141.0, 83.2, -52.6),
+    "Australia": (-43.7, 113.2, -10.6, 153.7),
+    "Quebec": (44.9, -79.8, 62.6, -57.1),
+    "California / San Francisco County": (37.708, -122.515, 37.833, -122.355),
+    "California / Alameda County": (37.45, -122.34, 37.91, -121.47),
+    "California / San Mateo County": (37.10, -122.52, 37.71, -122.08),
+    "British Columbia / Metro Vancouver Region": (49.0, -123.3, 49.5, -122.5),
+    "New South Wales / Blue Mountains Region": (-34.0, 150.0, -33.4, 150.6),
+}
+REGION_COUNTRY = {x["region"]: x["country"] for x in FIRES}
 FIRE_BY_NAME = {f["name"]: f for f in FIRES}
+
+def in_bounds(pt, b):
+    return b[0] <= pt[0] <= b[2] and b[1] <= pt[1] <= b[3]
+
+def bounds_of(country, region):
+    return BOUNDS[country if region == ALL else region]
+
+def locate(pt):
+    """(country, region) containing the GPS fix; falls back to the country, then to the nearest fire's region."""
+    for r, c in REGION_COUNTRY.items():
+        if in_bounds(pt, BOUNDS[r]):
+            return c, r
+    for c in COUNTRIES:
+        if in_bounds(pt, BOUNDS[c]):
+            return c, ALL
+    n = min(FIRES, key=lambda x: km_between(pt, x["origin"]))
+    return n["country"], n["region"]
+
+def zone_text(f, h):
+    if h == 0:
+        return "Ignition origin only. No smoke plume projected."
+    if f["RE"][h] < f["dist"]:
+        return f"Plume {f['dist'] - f['RE'][h]:.1f} km from the {f['target_name']} boundary."
+    return f"Leading edge has reached the {f['target_name']}; plume continuing downwind."
 
 def _path(f, h):
     (la0, lo0), (la1, lo1) = f["origin"], f["target"]
@@ -250,11 +295,15 @@ def in_poly(pt, poly):
         if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1: inside = not inside
     return inside
 
-def location_alert_ml(user, h, geo_state, t0, cities, fire):
-    if user is None:
-        if geo_state == "pending": return "", "?", "Requesting Location", "Allow location access in the browser prompt. You can also click the map to test a point."
-        note = "Device GPS is blocked or unavailable. " if st.session_state.get("fell_back") else ""
-        return "", "?", "Awaiting Location", note + "Click anywhere on the map to test a location."
+def alert_no_user(geo_state, selected):
+    if geo_state == "pending":
+        return "", "?", "Requesting Location", "Allow location access in the browser prompt. You can also click the map to test a point."
+    note = "Device GPS is blocked or unavailable. " if st.session_state.get("fell_back") else ""
+    if not selected:
+        return "", "?", "Select a Region", note + "Choose a country and region from the dropdowns, then click a point inside the outlined boundary."
+    return "", "?", "Awaiting Location", note + "Click a point inside the outlined boundary to test a location."
+
+def location_alert_ml(user, h, t0, cities, fire):
     dist = km_between(user, fire["origin"])
     if not cities:
         return "ok", "OK", "Safe: No Data", "No monitoring data available for this region at the selected time."
@@ -267,16 +316,10 @@ def location_alert_ml(user, h, geo_state, t0, cities, fire):
         return "crit", "!", f"Danger: Plume Arrives Hour {eta}", (f"Smoke is forecast over your location in {eta - h} h. {near_txt} Prepare now. Fire is {dist:.0f} km away.")
     return "ok", "OK", "Safe: Outside Plume Zone", (f"Fire is {dist:.0f} km away. {near_txt} Your location stays clear of the model's plume through Hour 24. Keep monitoring.")
 
-def location_alert_mock(user, h, geo_state, f):
-    if user is None:
-        if geo_state == "pending": return "", "?", "Requesting Location", "Allow location access in the browser prompt. You can also click the map to test a point."
-        note = "Device GPS is blocked or unavailable. " if st.session_state.get("fell_back") else ""
-        return "", "?", "Awaiting Location", note + "Click anywhere on the map to test a location."
+def location_alert_mock(user, h, f):
     dist = km_between(user, f["origin"])
-    
     mock_pols = mock_layers(f, h)
     outer_poly = mock_pols[0][1] if mock_pols else []
-    
     if h > 0 and in_poly(user, outer_poly):
         return "crit", "!", "Danger: Inside Smoke Plume", (f"Your location is under the {f['short']} plume at Hour {h} (PM2.5 {f['PM'][h]} ug/m3, {aqi_label(f['PM'][h])[0]}). Shelter in place or evacuate if ordered. Fire is {dist:.1f} km away.")
     eta = next((i for i in range(h + 1, 25) if mock_layers(f, i) and in_poly(user, mock_layers(f, i)[0][1])), None)
@@ -284,83 +327,108 @@ def location_alert_mock(user, h, geo_state, f):
         return "crit", "!", f"Danger: Plume Arrives Hour {eta}", (f"Smoke from {f['name']} is forecast over your location in {eta - h} h. Prepare to evacuate now. Fire is {dist:.1f} km away.")
     return "ok", "OK", "Safe: Outside Plume Zone", (f"The nearest fire, {f['name']}, is {dist:.1f} km away. Your location stays clear of its plume through Hour 24. Keep monitoring.")
 
-# ---------- Dropdown controls state setup ----------
-ALL = "All regions"
+# ---------- Shared advisory sections ----------
+def sec_resources(f, T):
+    return f"""<h4>Resource Pre-Positioning Orders</h4>
+<ul><li>Engine Strike Teams 1-3 to the {f['staging']}</li>
+<li>Air tanker and helitanker standby at {f['helibase']}</li>
+<li>Mobile air-quality monitors to {T} and {f['nearby']}</li>
+<li>EMS surge units to {f['hospital']}</li></ul>"""
 
+def sec_evac(f, T, eta_txt):
+    return f"""<h4>Mandatory Evacuation Sequencing</h4>
+<ul><li><b>Phase 1</b> (Hour 0-2): {f['short']} residences and trailheads</li>
+<li><b>Phase 2</b> (Hour 2-4): {f['nearby']}, special-needs and care facilities first</li>
+<li><b>Phase 3</b> (smoke arrival: {eta_txt}): {T}, via {f['route']}</li></ul>"""
+
+def sec_agency(f, wind_txt):
+    return f"""<h4>Inter-Agency Coordination</h4>
+<ul><li>State fire agency: unified command established at the {f['short']} post</li>
+<li>Highway patrol: contraflow on {f['route']} on Phase 3 order</li>
+<li>County health: shelter and respirator distribution</li>
+<li>Meteorological service: hourly wind-shift updates ({wind_txt}) to the dispersion model</li></ul>"""
+
+def sec_corridors(f, T):
+    return f"""<h4>Evacuation Corridors</h4>
+<ul><li><b>{T}:</b> leave via {f['route']} only when ordered. Do not travel toward the fire ({f['short']}).</li>
+<li>Avoid {f['avoid']}; it is reserved for emergency vehicles.</li>
+<li>Take medications, documents, pets and a 3-day supply of water.</li></ul>"""
+
+SEC_SHELTER = """<ul><li>Stay indoors. Close all windows, doors and fireplace dampers.</li>
+<li>Turn off fans that draw in outside air; set HVAC to recirculate.</li></ul>
+<h4>Air Filtration</h4>
+<ul><li>Run HEPA purifiers in one sealed room.</li>
+<li>If you must go outside, wear a fitted N95 or P100 respirator. Cloth and surgical masks do not protect against smoke.</li>
+<li>Children, older adults and people with asthma or heart conditions should avoid all exertion.</li></ul>"""
+
+SEC_INFORMED = """<h4>Stay Informed</h4>
+<ul><li>Follow official alerts on the county emergency channel and emergency radio.</li>
+<li>Emergency information line: 211</li></ul>"""
+
+PH = '<div class="panel"><div class="zone">Select a country and region from the dropdowns to load the incident advisory.</div></div>'
+
+# ---------- Dropdown controls state setup ----------
 def regions_of(country):
+    if country is None:
+        return []
     return [ALL] + list(dict.fromkeys(x["region"] for x in FIRES if x["country"] == country))
 
-st.session_state.setdefault("country", FIRES[0]["country"])
-st.session_state.setdefault("region", FIRES[0]["region"])
-st.session_state.setdefault("view", "region")
+st.session_state.setdefault("country", None)  # None = nothing selected yet (manual mode starts blank)
+st.session_state.setdefault("region", None)
+st.session_state.setdefault("view", "region")  # which dropdown last drove the map: "country" or "region"
 
-st.session_state.setdefault("map_center", COUNTRIES[FIRES[0]["country"]]["center"])
-st.session_state.setdefault("map_zoom", COUNTRIES[FIRES[0]["country"]]["zoom"])
-
-def update_map_view(c, z):
-    st.session_state.map_center = c
-    st.session_state.map_zoom = z
-
-if "pending_fire" in st.session_state:
+if "pending_fire" in st.session_state:  # set by a marker click; applied before the dropdowns are created
     pf = st.session_state.pop("pending_fire")
     st.session_state.active_fire_name = pf
     _f = FIRE_BY_NAME[pf]
     st.session_state.country, st.session_state.region = _f["country"], _f["region"]
-    update_map_view(_f["origin"], REGION_ZOOM)
-
-st.session_state.setdefault("prev_sel", (st.session_state.country, st.session_state.region))
-if st.session_state.region not in regions_of(st.session_state.country):
+    _cl = st.session_state.get("click_loc")
+    if _cl and not in_bounds(_cl, BOUNDS[_f["region"]]):
+        st.session_state.pop("click_loc")
+if st.session_state.country is None:
+    st.session_state.region = None
+elif st.session_state.region not in regions_of(st.session_state.country):
     st.session_state.region = ALL
 
-GATE_MSG = "Please allow location access or click any point on the map first to select regions."
-
-def _gated():
-    if st.session_state.get("located"): return False
-    st.session_state.country, st.session_state.region = st.session_state.prev_sel
-    st.session_state.gate_warn = True
-    st.toast(GATE_MSG)
-    return True
+def _drop_stale_click():
+    """Manual mode: a click outside the newly chosen country/region no longer counts as a location."""
+    cl = st.session_state.get("click_loc")
+    if cl and st.session_state.country and st.session_state.get("locsrc", "").startswith("Click") and not in_bounds(
+            cl, bounds_of(st.session_state.country, st.session_state.region)):
+        st.session_state.pop("click_loc")
 
 def on_country():
-    if _gated(): return
-    st.session_state.region = ALL
+    st.session_state.region = ALL  # cascade: country-level view
     st.session_state.view = "country"
     st.session_state.fire_touched = True
     st.session_state.pop("active_fire_name", None)
-    update_map_view(COUNTRIES[st.session_state.country]["center"], COUNTRIES[st.session_state.country]["zoom"])
+    _drop_stale_click()
 
 def on_region():
-    if _gated(): return
     st.session_state.view = "country" if st.session_state.region == ALL else "region"
     st.session_state.fire_touched = True
     st.session_state.pop("active_fire_name", None)
-    
-    sc = [x for x in FIRES if x["country"] == st.session_state.country and st.session_state.region in (ALL, x["region"])]
-    if sc:
-        c = (sum(x["origin"][0] for x in sc) / len(sc), sum(x["origin"][1] for x in sc) / len(sc))
-        z = COUNTRIES[st.session_state.country]["zoom"] if st.session_state.region == ALL else REGION_ZOOM
-        update_map_view(c, z)
+    _drop_stale_click()
 
-# ---------- Header & Core App Logic ----------
-t1, t3, t2 = st.columns([5, 3, 1.4], vertical_alignment="bottom")
+# ---------- Header, timeline & core app logic ----------
+t1, t3, t2, t4 = st.container(key="topbar").columns(4, vertical_alignment="bottom")  # slider | issue time | reset | timestamp
 t1.slider("Forecast timeline (hours from forecast issue)", 0, 24, key="hour", format="Hour %d")
-h = st.session_state.hour
-t0 = st.session_state.t0
-
-scope = [x for x in FIRES if x["country"] == st.session_state.country and st.session_state.region in (ALL, x["region"])]
-
-if any(x.get("is_ml") for x in scope):
-    t3.selectbox("Forecast issued at", eng.times, key="t0", format_func=lambda t: t.strftime("%d %b %Y %H:%M UTC"))
-else:
-    with t3: st.write("")
+h = st.session_state.hour  # re-read after the widget/callback
+t3.selectbox("Forecast issued at", eng.times, key="t0", format_func=lambda t: t.strftime("%d %b %Y %H:%M UTC"))
 t2.button("Reset to Hour 0", on_click=reset_hour)
-
-cards_slot = st.empty()
+t0 = st.session_state.t0
+t4.markdown(
+    f'<div class="stamp">{"Forecast Issued" if h == 0 else "Forecast Valid"}: '
+    f'{(t0 + timedelta(hours=h)).strftime("%b %d, %Y - %H:%M UTC")}</div>',
+    unsafe_allow_html=True,
+)
+cards_slot = st.empty()  # filled once the focus fire (nearest to the user) is known
 
 left, right = st.columns([2, 1])
 rc = right.container(key="rightcol")
 
 with rc:
+    # Permission state is re-read when the forecast hour changes; a switch to "granted" re-requests GPS.
     perm = streamlit_js_eval(
         js_expressions="(navigator.permissions ? navigator.permissions.query({name:'geolocation'}).then(r => r.state) : Promise.resolve('unknown'))",
         key=f"perm_{h}",
@@ -368,172 +436,226 @@ with rc:
     prev = st.session_state.get("perm_last")
     if perm and perm != prev:
         st.session_state.perm_last = perm
-        if perm == "granted" and prev is not None:
+        if perm == "granted" and prev is not None:  # permission changed: drop map override, ask GPS again
             st.session_state.geo_n = st.session_state.get("geo_n", 0) + 1
             st.session_state.pop("click_loc", None)
             st.session_state.pop("gps_loc", None)
             st.session_state.fell_back = False
             st.session_state.locsrc = "Auto-detect Device GPS"
-            
-    geo = get_geolocation(component_key=f"geo_{st.session_state.get('geo_n', 0)}")
-    
+
+    geo = get_geolocation(component_key=f"geo_{st.session_state.get('geo_n', 0)}")  # prompts on first load
     if geo and "coords" in geo:
         st.session_state.gps_loc = (geo["coords"]["latitude"], geo["coords"]["longitude"])
     elif geo and "error" in geo:
         st.session_state.gps_loc = None
-        
+
     if st.session_state.get("locsrc") is None: st.session_state.locsrc = "Auto-detect Device GPS"
+    # Fallback: GPS denied/unavailable -> switch the toggle to map clicks (before the radio is created)
     if geo and "error" in geo and not st.session_state.get("fell_back"):
         st.session_state.fell_back = True
         st.session_state.locsrc = "Click on Map to Test Location"
-        
+
     src = st.radio("Test location source", ["Auto-detect Device GPS", "Click on Map to Test Location"], horizontal=True, key="locsrc")
     if src.startswith("Auto") and st.session_state.get("prev_src", "").startswith("Click"):
+        # switched back to auto-detect: re-request browser geolocation, no button needed
         st.session_state.geo_n = st.session_state.get("geo_n", 0) + 1
         st.session_state.fell_back = False
         st.session_state.pop("gps_loc", None)
         st.session_state.prev_src = src
         st.rerun()
-        
+
     st.session_state.prev_src = src
     gps = None if st.session_state.get("perm_last") == "denied" else st.session_state.get("gps_loc")
     click = st.session_state.get("click_loc")
     user = click if src.startswith("Click") else gps
     geo_state = "pending" if src.startswith("Auto") and geo is None else "done"
     st.session_state.located = user is not None
-    alert_slot = st.empty()
+    locked = src.startswith("Auto") and user is not None  # live GPS: region follows the fix, manual changes are off
+    if locked:
+        st.session_state.country, st.session_state.region = locate(user)
+        st.session_state.view = "region"
+    alert_slot = st.empty()  # filled after the map so a fresh click is already known
 
-if st.session_state.get("active_fire_name") and FIRE_BY_NAME.get(st.session_state.active_fire_name) in scope:
-    fire = FIRE_BY_NAME[st.session_state.active_fire_name]
-else:
-    fire = min(scope, key=lambda x: km_between(user, x["origin"])) if user else scope[0]
-    
-cities = []
+# Fires in the selected region (or the whole country); the timeline drives all of them together.
+scope = [x for x in FIRES if x["country"] == st.session_state.country and st.session_state.region in (ALL, x["region"])]
+selected = bool(scope)
 
-if fire.get("is_ml"):
+# Focus fire: a clicked marker, else the one nearest the user, else the first. It drives the cards, alert and advisory.
+fire = None
+if selected:
+    _afn = st.session_state.get("active_fire_name")
+    if _afn and FIRE_BY_NAME.get(_afn) in scope:
+        fire = FIRE_BY_NAME[_afn]
+    else:
+        fire = min(scope, key=lambda x: km_between(user, x["origin"])) if user else scope[0]
+
+cities, S, P = [], None, None
+if selected and fire["is_ml"]:
     S = eng.summary(fire["name"], fire["origin"][0], fire["origin"][1], t0, h)
     P = eng.build(fire["name"], fire["origin"][0], fire["origin"][1], t0, h)
     cities = P["cities"]
     n = S["n_flagged"]
     label, lcls = aqi_label(S["peak_pm"])
-    cards_slot.markdown(
-        '<div class="cards">'
-        + card("Active Monitoring Zone", fire["name"], f"Forecast issued {t0:%d %b %H:%M} UTC", "")
+    cards_html = (
+        card("Active Monitoring Zone", fire["name"], f"Forecast issued {t0:%d %b %H:%M} UTC", "")
         + card("Cities Above Alert Threshold", f"{n} of {len(cities)}", f"PM2.5 >= {ALERT_UGM3:.0f} ug/m3 (Hour {h})", "crit" if n >= 3 else "warn" if n else "")
         + card("Wind Vector at Fire", f"{S['wind_kmh']} km/h ({S['wind_from']})", f"Smoke moving toward {S['travel_to']}", "warn")
         + card("Downwind Air Quality", f"{label} (PM2.5: {S['peak_pm']:.0f})", f"Peak city: {nice(S['peak_city'])}", lcls)
-        + "</div>",
-        unsafe_allow_html=True,
+    )
+elif selected:
+    label, lcls = aqi_label(fire["PM"][h])
+    cards_html = (
+        card("Active Monitoring Zone", fire["name"], f"Nearest of {len(scope)} active fire{'s' if len(scope) > 1 else ''}" if user else "Live Feed", "")
+        + card("Predicted Fire Severity", f"{fire.get('score', '-')} / 100", f"{fire['sev']} - {fire['HA'][h]} Hectares (Hour {h})", fire["cls"])
+        + card("Prediction Confidence", f"{fire.get('conf', '-')}%", "Fallback estimate (no ML rows)", "")
+        + card("Air Quality Index", f"{fire['PM'][h]}", f"{label} - " + ("Alert Active" if h else "Baseline"), lcls)
     )
 else:
-    label, lcls = aqi_label(fire["PM"][h])
-    wind_delta = "Shifting" if 2 <= h <= 12 else "Stable"
-    cards_slot.markdown(
-        '<div class="cards">'
-        + card("Active Monitoring Zone", fire["name"], f"Nearest of {len(scope)} active fire{'s' if len(scope) > 1 else ''}" if user else "Live Feed", "")
-        + card("Predicted Fire Severity", fire["sev"], f"{fire['HA'][h]} Hectares (Hour {h})", fire["cls"])
-        + card("Wind Vector", f"{round(fire['WIND'][h], 1)} km/h ({fire['DIR'][h]})", wind_delta, "warn")
-        + card("Downwind Air Quality", f"{label} (PM2.5: {fire['PM'][h]})", "Alert Active" if h else "Baseline", lcls)
-        + "</div>",
-        unsafe_allow_html=True,
-    )
-
-if fire.get("is_ml") and getattr(eng, "demo", False):
-    st.markdown('<div class="zone"><span class="badge warn">Demo data</span>&nbsp; Model files not found, so this runs on a built-in '
-                'synthetic smoke event. Put test_predictions.csv and fire_wind.csv in ./data to use the real model output.</div>',
-                unsafe_allow_html=True)
+    label, lcls = "", ""
+    cards_html = "".join(card(t, "No region selected", "Select a country and region", "") for t in
+                         ("Active Monitoring Zone", "Predicted Fire Severity", "Prediction Confidence", "Air Quality Index"))
+cards_slot.markdown(f'<div class="cards">{cards_html}</div>', unsafe_allow_html=True)
 
 with left:
     r1, r2, r3 = st.columns([3, 5, 5], vertical_alignment="center")
-    r1.selectbox("Country", list(COUNTRIES), key="country", on_change=on_country, label_visibility="collapsed", format_func=lambda c: f"Country: {c}")
-    r2.selectbox("County / Province / Region", regions_of(st.session_state.country), key="region", on_change=on_region, label_visibility="collapsed", format_func=lambda r: f"Region: {r}")
-    st.session_state.prev_sel = (st.session_state.country, st.session_state.region)
+    r1.selectbox("Country", list(COUNTRIES), index=None, placeholder="Select country", key="country", on_change=on_country,
+                 label_visibility="collapsed", format_func=lambda c: f"Country: {c}", disabled=src.startswith("Auto"))
+    r2.selectbox("County / Province / Region", regions_of(st.session_state.country), index=None, placeholder="Select region",
+                 key="region", on_change=on_region, label_visibility="collapsed", format_func=lambda r: f"Region: {r}",
+                 disabled=src.startswith("Auto") or st.session_state.country is None)
     mode = r3.radio("Map display mode", ["Wildfire Plume & Spread", "Air Quality (AQI) Heat Map"], horizontal=True, label_visibility="collapsed", key="mode")
-    
-    m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom, tiles="OpenStreetMap")
+
+    # The view only changes through explicit actions (GPS lock, dropdowns, marker click). It is passed to st_folium as
+    # center/zoom and the map's own pan/zoom is never read back, so panning cannot trigger a rerun that snaps the camera.
+    if locked:
+        center, zoom = user, REGION_ZOOM
+    elif not selected:
+        center, zoom = (20.0, -10.0), 2  # world overview: all fire markers, no region yet
+    elif st.session_state.view == "country":
+        center, zoom = COUNTRIES[st.session_state.country]["center"], COUNTRIES[st.session_state.country]["zoom"]
+    elif st.session_state.get("active_fire_name") and FIRE_BY_NAME.get(st.session_state.active_fire_name) in scope:
+        center, zoom = FIRE_BY_NAME[st.session_state.active_fire_name]["origin"], REGION_ZOOM
+    else:
+        center, zoom = (sum(x["origin"][0] for x in scope) / len(scope), sum(x["origin"][1] for x in scope) / len(scope)), REGION_ZOOM
+
+    m = folium.Map(location=center, zoom_start=zoom, tiles="OpenStreetMap")
+    # st_folium sets #map_div to an inline `height` px; make it fill the (CSS-resized) iframe instead
     m.get_root().header.add_child(folium.Element("<style>html,body{height:100%;margin:0;overflow:hidden}#map_div,#map_div2,.folium-map{height:100vh!important}</style>"))
-    
-    for x in scope:
-        sel = x is fire
-        if sel: folium.CircleMarker(x["origin"], radius=22, color="#e03131", weight=3, fill=True, fill_opacity=0.12).add_to(m)
-        ha_text = f"{x['HA'][h]} ha at Hour {h}" if not x.get("is_ml") else "ML Engine Active"
+
+    if selected:
+        sw_ne = bounds_of(st.session_state.country, st.session_state.region)
+        folium.Rectangle(
+            [[sw_ne[0], sw_ne[1]], [sw_ne[2], sw_ne[3]]], color="#4a6fa5", weight=3, dash_array="10 8",
+            fill=True, fill_opacity=0.04,
+            tooltip=f"Boundary: {st.session_state.country if st.session_state.region == ALL else st.session_state.region}",
+        ).add_to(m)
+
+    for x in FIRES:
+        if x is fire: folium.CircleMarker(x["origin"], radius=22, color="#e03131", weight=3, fill=True, fill_opacity=0.12).add_to(m)
+        ha_text = "ML Engine Active" if x["is_ml"] else f"{x['HA'][h]} ha at Hour {h}"
         folium.Marker(
             x["origin"],
-            tooltip=x["name"],
+            tooltip=x["name"],  # st_folium reports this on click; used to select the fire
             popup=folium.Popup(f"{x['name']}: {x['sev']}, {ha_text}", max_width=280),
             icon=folium.Icon(color=x["color"], icon="fire", prefix="fa"),
         ).add_to(m)
-        
+
     if user:
         folium.Marker(user, tooltip="Your test location", icon=folium.Icon(color="darkblue", icon="user", prefix="fa")).add_to(m)
-        
-    if mode.startswith("Air"):
-        heat_data = []
-        for x in scope:
-            if x.get("is_ml"): heat_data.extend(eng.heat_points(x["name"], x["origin"][0], x["origin"][1], t0, h))
-            else: heat_data.extend(get_heatmap_data(x, h))
-        if heat_data:
-            grad = HEAT_GRADIENT if any(x.get("is_ml") for x in scope) else {0.2: "#4a6fa5", 0.5: "#c98a0b", 0.8: "#c2410c", 1.0: "#7a0f12"}
-            HeatMap(heat_data, radius=38, blur=28, min_opacity=0.25, max_val=1.0, gradient=grad).add_to(m)
-    elif h > 0:
-        for x in scope:
-            if x.get("is_ml"):
-                eng.add_to_map(m, x["name"], x["origin"][0], x["origin"][1], t0, h)
-            else:
-                for layer_name, poly in mock_layers(x, h):
-                    st_ = LAYER_STYLE[layer_name]
-                    folium.Polygon(poly, color="#7a0f12", weight=st_["weight"], fill=True, fill_color=st_["fill"], fill_opacity=st_["opacity"], tooltip=f"{x['short']} Hour {h}: {x['HA'][h]} ha, PM2.5 {x['PM'][h]} ug/m3, reach {x['RE'][h]} km").add_to(m)
-                
-    # Camera fix: the view is only changed by explicit actions (country / region / fire pick) through
-    # session_state. We no longer read center/zoom back from the map on every pan, which caused a
-    # rerun on each move that re-applied a stale view and made the camera jump back.
-    res = st_folium(
-        m,
-        use_container_width=True,
-        height=560,
-        center=st.session_state.map_center,
-        zoom=st.session_state.map_zoom,
-        returned_objects=["last_clicked", "last_object_clicked_tooltip"],
-        key="map",
-    )
-    res = res or {}
-    
-    tt = res.get("last_object_clicked_tooltip")
-    if tt in FIRE_BY_NAME and tt != st.session_state.get("last_tt"):
-        st.session_state.last_tt = tt
-        st.session_state.pending_fire = tt
-        st.session_state.view = "region"
-        st.session_state.fire_touched = True
-        st.rerun()
-        
-    c = res.get("last_clicked")
-    if c and src.startswith("Click") and (c["lat"], c["lng"]) != st.session_state.get("click_loc"):
-        st.session_state.click_loc = (c["lat"], c["lng"])
-        st.rerun()
 
-acls, icon, atitle, abody = location_alert_ml(user, h, geo_state, t0, cities, fire) if fire.get("is_ml") else location_alert_mock(user, h, geo_state, fire)
-if user is None and st.session_state.get("gate_warn"):
-    acls, icon, atitle, abody = "warn", "!", "Location Required", GATE_MSG
-elif user is not None:
-    st.session_state.gate_warn = False
+    if selected:
+        if mode.startswith("Air"):
+            heat_data = []
+            for x in scope:
+                if x["is_ml"]: heat_data.extend(eng.heat_points(x["name"], x["origin"][0], x["origin"][1], t0, h))
+                else: heat_data.extend(get_heatmap_data(x, h))
+            if heat_data:
+                grad = HEAT_GRADIENT if any(x["is_ml"] for x in scope) else {0.2: "#4a6fa5", 0.5: "#c98a0b", 0.8: "#c2410c", 1.0: "#7a0f12"}
+                HeatMap(heat_data, radius=38, blur=28, min_opacity=0.25, max_val=1.0, gradient=grad).add_to(m)
+        else:
+            if h > 0:
+                for x in scope:
+                    if x["is_ml"]:
+                        eng.add_to_map(m, x["name"], x["origin"][0], x["origin"][1], t0, h, show_cities=False)
+                    else:
+                        for layer_name, poly in mock_layers(x, h):
+                            st_ = LAYER_STYLE[layer_name]
+                            folium.Polygon(poly, color="#7a0f12", weight=st_["weight"], fill=True, fill_color=st_["fill"], fill_opacity=st_["opacity"], tooltip=f"{x['short']} Hour {h}: {x['HA'][h]} ha, PM2.5 {x['PM'][h]} ug/m3, reach {x['RE'][h]} km").add_to(m)
+            # Cities are drawn once, after all plumes, using each city's worst status across the fires in view.
+            ml_fires = [(x["name"], x["origin"][0], x["origin"][1]) for x in scope if x["is_ml"]]
+            if ml_fires:
+                eng.add_cities_to_map(m, ml_fires, t0, h)
+
+    res = st_folium(m, use_container_width=True, height=560, center=center, zoom=zoom,
+                    returned_objects=["last_clicked", "last_object_clicked_tooltip"], key="map")
+    res = res or {}
+
+    tt = res.get("last_object_clicked_tooltip")
+    if tt in FIRE_BY_NAME and tt != st.session_state.get("last_tt"):  # new marker click
+        st.session_state.last_tt = tt
+        if selected and FIRE_BY_NAME[tt] in scope:  # a fire already in view becomes the focus fire
+            st.session_state.active_fire_name = tt
+            st.rerun()
+        elif src.startswith("Click") and selected:  # manual mode: jump to that fire's region
+            st.session_state.pending_fire = tt
+            st.session_state.view = "region"
+            st.session_state.fire_touched = True
+            st.rerun()
+
+    c = res.get("last_clicked")
+    c = (c["lat"], c["lng"]) if c else None
+    if c and c != st.session_state.get("last_click"):  # each click is handled once
+        st.session_state.last_click = c
+        if src.startswith("Click"):  # in Auto mode map clicks are ignored
+            if not selected:
+                st.session_state.warn = ("Select a Region First", "Select a country and region from the dropdowns, then click inside its outline.")
+                st.toast("Select a country and region first.")
+            elif in_bounds(c, bounds_of(st.session_state.country, st.session_state.region)):
+                st.session_state.click_loc = c
+                st.rerun()
+            else:
+                st.session_state.warn = ("Outside Selected Region", "You have to click within the region.")
+                st.toast("You have to click within the region.")
+
+if user is None or not selected:
+    acls, icon, atitle, abody = alert_no_user(geo_state, selected)
+elif fire["is_ml"]:
+    acls, icon, atitle, abody = location_alert_ml(user, h, t0, cities, fire)
+else:
+    acls, icon, atitle, abody = location_alert_mock(user, h, fire)
+_w = st.session_state.pop("warn", None)
+if _w:
+    acls, icon, atitle, abody = "warn", "!", *_w
 if user:
     abody += f'<div style="opacity:.7;margin-top:4px;font-size:.78rem">Location source: {"Map click" if src.startswith("Click") else "Device GPS"}</div>'
 alert_slot.markdown(f'<div class="alert {acls}"><div class="ic">{icon}</div><div><div class="t">{atitle}</div><div class="b">{abody}</div></div></div>', unsafe_allow_html=True)
 
 with rc:
     with st.container(key="advisory"):
-        gov, pub, analytics = st.tabs(["Command", "Advisory", "Data & Analytics"])
-        
-        if fire.get("is_ml"):
+        gov, pub, analytics = st.tabs(["Government / Municipal Command", "Public / Citizen Advisory", "Data & Analytics"])
+
+        if not selected:
+            for tab in (gov, pub, analytics):
+                with tab:
+                    st.markdown(PH, unsafe_allow_html=True)
+
+        elif fire["is_ml"]:
+            T = fire["target_name"]
             fl = sorted([c for c in cities if c["flagged"]], key=lambda c: c["dist_km"])
             fl_names = ", ".join(nice(c["city"]) for c in fl) or "none"
-            
+
+            # first hour the model's plume covers the downwind town (drives Phase 3 of the evacuation plan)
+            _eta = next((i for i in range(0, HORIZON_H + 1)
+                         if eng.in_plume(fire["target"][0], fire["target"][1], fire["name"], fire["origin"][0], fire["origin"][1], t0, i)), None)
+            eta_txt = f"Hour {_eta}" if _eta is not None else f"after Hour {HORIZON_H}"
+
             truth_seq = "".join(f"<li><b>{nice(c['city'])}</b>: Forecasted <b>{c['pm_6h']:.0f}</b> ug/m3 | Actual recorded was <b>{c['actual_6h']:.0f}</b> ug/m3 <span style='opacity:0.7'>(Baseline no-change guess: {c['pm_now']:.0f})</span></li>" for c in cities if c["flagged"])
             if not truth_seq:
                 truth_seq = "<li>No cities above threshold in this window.</li>"
-                
+
             seq = "".join(f"<li><b>{i}. {nice(c['city'])}</b> ({c['dist_km']:.0f} km from fire): PM2.5 {c['pm_h']:.0f} ug/m3, {aqi_label(c['pm_h'])[0]}. Issue {'a shelter-in-place order' if c['pm_h'] >= 150 else 'an air quality advisory'}.</li>" for i, c in enumerate(fl, 1)) or "<li>No city above threshold. Continue monitoring.</li>"
             threat, tcls = ("High", "crit") if n >= 3 else ("Elevated", "warn") if n else ("Low", "ok")
+            wind_txt = f"{S['wind_from']} at {S['wind_kmh']} km/h"
 
             with gov:
                 st.markdown(
@@ -543,12 +665,16 @@ with rc:
 <ul><li>Cities above threshold: <b>{n} of {len(cities)}</b> ({fl_names})</li>
 <li>Plume leading edge: <b>{S['reach_km']:.0f} km</b> {S['travel_to']} of origin</li>
 <li>Peak PM2.5: <b>{S['peak_pm']:.0f} ug/m3</b> in {nice(S['peak_city'])} ({label})</li>
-<li>Threat level: <span class="badge {tcls}">{threat}</span></li></ul>
+<li>Threat level: <span class="badge {tcls}">{threat}</span></li>
+<li>Active incidents in view: <b>{len(scope)}</b> ({', '.join(x['short'] for x in scope)}); focus fire: <b>{fire['short']}</b></li></ul>
 <h4>6h Forecast vs Ground Truth Replay</h4>
 <p style="font-size:.84rem; color:var(--mute); margin-bottom:4px;">As this system runs on real historical open-meteo data, we can directly verify the model's accuracy at the 6-hour prediction horizon:</p>
 <ul>{truth_seq}</ul>
 <h4>Alert Sequencing (nearest to fire first)</h4>
 <ul>{seq}</ul>
+{sec_resources(fire, T)}
+{sec_evac(fire, T, eta_txt)}
+{sec_agency(fire, wind_txt)}
 </div>""", unsafe_allow_html=True
                 )
             with pub:
@@ -556,18 +682,11 @@ with rc:
                     f"""<div class="panel">
 <div class="zone"><span class="badge {lcls}">{label}</span>&nbsp; Air quality forecast for Hour {h}. {S['zone_text']}</div>
 <h4>Shelter in Place ({fl_names})</h4>
-<ul><li>Stay indoors. Close all windows, doors and fireplace dampers.</li>
-<li>Turn off fans that draw in outside air; set HVAC to recirculate.</li></ul>
-<h4>Air Filtration</h4>
-<ul><li>Run HEPA purifiers in one sealed room.</li>
-<li>If you must go outside, wear a fitted N95 or P100 respirator. Cloth and surgical masks do not protect against smoke.</li>
-<li>Children, older adults and people with asthma or heart conditions should avoid all exertion.</li></ul>
-<h4>Stay Informed</h4>
-<ul><li>Follow official alerts on the emergency channel and emergency radio.</li>
-<li>Emergency information line: 211</li></ul>
+{SEC_SHELTER}
+{sec_corridors(fire, T)}
+{SEC_INFORMED}
 </div>""", unsafe_allow_html=True
                 )
-                
             with analytics:
                 city_analytics = "".join(f"<li><b>{nice(c['city'])}</b>: {c['dist_km']:.0f} km away. <b>PM2.5 Current:</b> {c['pm_now']:.1f} | <b>PM2.5 +6h Predict:</b> {c['pm_6h']:.1f} | <b>Flagged:</b> {c['flagged']}</li>" for c in sorted(cities, key=lambda c: c["dist_km"]))
                 if not city_analytics:
@@ -582,50 +701,50 @@ with rc:
 <p style="font-size:.84rem; color:var(--mute); margin-top:8px;">The Random Forest relies heavily on these city coordinates, along-wind vectors, and 3-to-12 hour PM2.5 lagging signals to predict exactly what the AQI will be six hours from this moment.</p>
 </div>""", unsafe_allow_html=True
                 )
-                
+
         else:
+            T = fire["target_name"]
+            eta_txt = f"Hour {fire['eta']}" if fire["eta"] is not None else f"after Hour {HORIZON_H}"
+            wind_txt = f"{fire['DIR'][h]} at {round(fire['WIND'][h], 1)} km/h"
             with gov:
                 st.markdown(
                     f"""<div class="panel">
-<div class="zone"><span class="badge {lcls}">Hour {h}</span>&nbsp; {fire['name']}</div>
+<div class="zone"><span class="badge {lcls}">Hour {h}</span>&nbsp; {fire['name']}: {zone_text(fire, h)}</div>
 <h4>Incident Metrics (MOCK DATA)</h4>
 <ul><li>Projected burn area: <b>{fire['HA'][h]} ha</b> (24-hour peak {fire['HA'][-1]} ha)</li>
-<li>Plume leading edge: <b>{fire['RE'][h]} km</b> from origin</li>
+<li>Plume leading edge: <b>{fire['RE'][h]} km</b> from origin toward {T}</li>
 <li>Peak PM2.5: <b>{fire['PM'][h]} ug/m3</b> ({label})</li>
-<li>Threat level: <span class="badge {fire['cls']}">{fire['sev']}</span></li></ul>
-<p style="font-size:.84rem; color:var(--mute); margin-top:8px;">This fire lacks real-time Open-Meteo sensor API linkage. Values shown are synthetic mathematical projections, not ML predictions.</p>
+<li>Threat level: <span class="badge {fire['cls']}">{fire['sev']}</span></li>
+<li>Active incidents in view: <b>{len(scope)}</b> ({', '.join(x['short'] for x in scope)}); focus fire: <b>{fire['short']}</b></li></ul>
+<p style="font-size:.84rem; color:var(--mute); margin-top:8px;">This fire has no ML rows in the data files, so these values are synthetic projections, not model predictions.</p>
+{sec_resources(fire, T)}
+{sec_evac(fire, T, eta_txt)}
+{sec_agency(fire, wind_txt)}
 </div>""", unsafe_allow_html=True
                 )
             with pub:
                 st.markdown(
                     f"""<div class="panel">
-<div class="zone"><span class="badge {lcls}">{label}</span>&nbsp; {fire['name']} air quality mock projection.</div>
-<h4>General Advisory</h4>
-<ul><li>Stay indoors if smoke is visible.</li>
-<li>Avoid rigorous outdoor activity.</li></ul>
+<div class="zone"><span class="badge {lcls}">{label}</span>&nbsp; {fire['name']} air quality projection for Hour {h} (mock). {zone_text(fire, h)}</div>
+<h4>Shelter in Place ({T})</h4>
+{SEC_SHELTER}
+{sec_corridors(fire, T)}
+{SEC_INFORMED}
 </div>""", unsafe_allow_html=True
                 )
             with analytics:
                 st.markdown(
                     f"""<div class="panel">
 <h4>No Model Analytics Available</h4>
-<p style="font-size:.84rem; color:var(--mute);">Please run the updated ML training script. The dataset is missing the <i>test_predictions.csv</i> rows for {fire['name']}.</p>
+<p style="font-size:.84rem; color:var(--mute);">Please run the ML training script. The dataset is missing the <i>test_predictions.csv</i> rows for {fire['name']}.</p>
 </div>""", unsafe_allow_html=True
                 )
 
-    if getattr(eng, "demo", False):
-        st.markdown(
-            '<div class="sys">'
-            + card("Backend", "LinuxONE Secure Container", f"Connected", "")
-            + card("Model", "Fallback / Demo Mode", "Missing real ML output", "warn")
-            + "</div>", unsafe_allow_html=True
-        )
-    else:
-        meta = load_meta(eng.data_dir) if eng.data_dir else {}
-        mm, hw = meta.get("metrics", {}), meta.get("hardware_audit", {})
-        st.markdown(
-            '<div class="sys">'
-            + card("Backend", "LinuxONE Secure Container", f"Connected | {hw.get('architecture', 's390x')}", "")
-            + card("Model", f"Random Forest ({hw.get('ml_backend', 'n/a')})", f"6h MAE {mm.get('MAE', 'n/a')} ug/m3 | {mm.get('MAE_improvement_vs_baseline_pct', 'n/a')}% vs persistence", "")
-            + "</div>", unsafe_allow_html=True
-        )
+    meta = load_meta(eng.data_dir) if eng.data_dir else {}
+    mm, hw = meta.get("metrics", {}), meta.get("hardware_audit", {})
+    st.markdown(
+        '<div class="sys">'
+        + card("Backend", "LinuxONE Secure Container", f"Connected | {hw.get('architecture', 's390x')}", "")
+        + card("Model", f"Random Forest ({hw.get('ml_backend', 'n/a')})", f"6h MAE {mm.get('MAE', 'n/a')} ug/m3 | {mm.get('MAE_improvement_vs_baseline_pct', 'n/a')}% vs persistence", "")
+        + "</div>", unsafe_allow_html=True
+    )

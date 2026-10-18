@@ -10,13 +10,16 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-ALERT_UGM3 = 35.0  
-HORIZON_H = 24  
-CAP_START = 0.82  
+ALERT_UGM3 = 35.0
+HORIZON_H = 24
+CAP_START = 0.82
 R_KM = 6371.0088
+MODEL_H = 6.0       # the model forecasts 6h ahead; beyond that we hold its last forecast
+MAX_BEND_DEG = 35.0  # max local bend of the plume centreline away from its axis
+MAX_DRIFT = 0.30     # max sideways drift of the centreline, as a fraction of reach
 
 LAYERS = (("outer", 1.00, 1.00), ("l2", 0.82, 0.93), ("l3", 0.64, 0.82), ("l4", 0.46, 0.68), ("core", 0.28, 0.52))
-LAYER_STYLE = {  
+LAYER_STYLE = {
     "outer": dict(fill="#c2410c", opacity=0.14, weight=1.2),
     "l2": dict(fill="#c2410c", opacity=0.14, weight=0),
     "l3": dict(fill="#c2410c", opacity=0.14, weight=0),
@@ -77,27 +80,34 @@ def _arclen(pts):
     d = np.diff(pts, axis=0)
     return np.concatenate([[0.0], np.cumsum(np.hypot(d[:, 0], d[:, 1]))])
 
-def _wind_centerline(bearings, speeds, reach, n=40):
-    pts = [(0.0, 0.0)]
-    for b, s in zip(bearings, speeds):
-        x, y = pts[-1]
-        pts.append((x + s * math.sin(math.radians(b)), y + s * math.cos(math.radians(b))))
-    traj = np.array(pts)
-    cum = _arclen(traj)
-    if cum[-1] < 1e-6:
-        b = math.radians(bearings[0])
-        traj = np.array([[0.0, 0.0], [math.sin(b), math.cos(b)]])
-        cum = _arclen(traj)
-    u = np.linspace(0, cum[-1], n)
-    c = np.column_stack([np.interp(u, cum, traj[:, 0]), np.interp(u, cum, traj[:, 1])])
-    for _ in range(4):
-        c[1:-1] = 0.25 * c[:-2] + 0.5 * c[1:-1] + 0.25 * c[2:]
-    return c * (reach / _arclen(c)[-1])
+# ---------------------------------------------------------------------------
+# Plume geometry is built in an "axis frame": u runs along the plume axis (always
+# increasing, so the plume can never fold back over itself) and v is the sideways
+# offset (positive = left). The finished shape is rotated into map coordinates.
+# ---------------------------------------------------------------------------
+def _axis_centerline(bearings, speeds, axis, reach, n=40):
+    """Centreline (u, v) of length `reach`. Wind direction changes bend it sideways,
+    but progress along u is monotonic, so loops and reversals cannot occur."""
+    sp = np.maximum(np.asarray(speeds, dtype=float), 0.0)
+    u = np.linspace(0.0, reach, n)
+    if sp.sum() < 1e-6:
+        return np.column_stack([u, np.zeros(n)])
+    cum = np.concatenate([[0.0], np.cumsum(sp)]) / sp.sum()
+    mid = 0.5 * (cum[:-1] + cum[1:])
+    dev = np.clip([_angdiff(b, axis) for b in bearings], -MAX_BEND_DEG, MAX_BEND_DEG)
+    slope = -np.tan(np.radians(dev))  # clockwise deviation = drift to the right (negative v)
+    s = np.linspace(0.0, 1.0, n)
+    sl = np.interp(s, mid, slope)
+    for _ in range(3):
+        sl[1:-1] = 0.25 * sl[:-2] + 0.5 * sl[1:-1] + 0.25 * sl[2:]
+    v = np.concatenate([[0.0], np.cumsum(0.5 * (sl[1:] + sl[:-1]) * np.diff(u))])
+    lim = MAX_DRIFT * reach
+    v = lim * np.tanh(v / lim)  # soft limit, no kinks
+    return np.column_stack([u, v])
 
 def _truncate(center, frac):
-    cum = _arclen(center)
-    u = np.linspace(0, frac * cum[-1], len(center))
-    return np.column_stack([np.interp(u, cum, center[:, 0]), np.interp(u, cum, center[:, 1])])
+    u_new = np.linspace(0.0, frac * center[-1, 0], len(center))
+    return np.column_stack([u_new, np.interp(u_new, center[:, 0], center[:, 1])])
 
 def _half_width(s, hw, phase=0.0, side=0):
     s = np.asarray(s, dtype=float)
@@ -107,20 +117,19 @@ def _half_width(s, hw, phase=0.0, side=0):
     return hw * (0.02 + 0.98 * s ** 0.85) * cap * wob
 
 def _plume_polygon(center, hw, phase=0.0):
-    d = np.diff(center, axis=0)
-    s = _arclen(center)
-    s = s / s[-1]
-    tang = np.vstack([d, d[-1]])
-    tang = tang / np.maximum(np.hypot(tang[:, 0], tang[:, 1])[:, None], 1e-9)
-    nrm = np.column_stack([-tang[:, 1], tang[:, 0]])
-    left = center + nrm * _half_width(s, hw, phase, 0)[:, None]
-    right = center - nrm * _half_width(s, hw, phase, 1)[:, None]
+    """Polygon in the axis frame. Both edges are offset sideways from a centreline whose
+    u is strictly increasing, so the outline cannot cross itself."""
+    s = center[:, 0] / max(center[-1, 0], 1e-9)
+    left = np.column_stack([center[:, 0], center[:, 1] + _half_width(s, hw, phase, 0)])
+    right = np.column_stack([center[:, 0], center[:, 1] - _half_width(s, hw, phase, 1)])
     return np.vstack([left, right[::-1]])
 
-def _rotate(pts, deg):
-    r = math.radians(deg)
-    c, s = math.cos(r), math.sin(r)
-    return np.column_stack([pts[:, 0] * c + pts[:, 1] * s, -pts[:, 0] * s + pts[:, 1] * c])
+def _to_geo(pts, axis):
+    """Axis frame (u along, v left) -> map frame (x east, y north) for a bearing `axis`."""
+    t = math.radians(axis)
+    st, ct = math.sin(t), math.cos(t)
+    u, v = pts[:, 0], pts[:, 1]
+    return np.column_stack([u * st - v * ct, u * ct + v * st])
 
 def _find_data_dir(explicit=None):
     here = Path(__file__).resolve().parent
@@ -184,15 +193,17 @@ class PlumeEngine:
 
     def city_states(self, fire_name, f_lat, f_lon, t0, h):
         t0 = pd.Timestamp(t0)
-        frac = h / 6.0  
+        # Interpolate now -> +6h forecast, then HOLD the forecast. The old code kept extrapolating
+        # past hour 6 (up to 4x the change), which pushed cities to absurd values or to zero.
+        frac = min(max(h / MODEL_H, 0.0), 1.0)
         out = []
         if t0 not in self._by_time: return out
-        
+
         g = self._by_time[t0]
         rows = g[g["Fire_Name"] == fire_name]
         for _, r in rows.iterrows():
             now, fc = float(r["Current"]), float(r["Forecast_6h_Later"])
-            pm_h = max(0.0, now + (fc - now) * frac) 
+            pm_h = max(0.0, now + (fc - now) * frac)
             lat, lon = float(r["Lat"]), float(r["Lon"])
             out.append(dict(
                 city=r["City"], lat=lat, lon=lon,
@@ -204,7 +215,7 @@ class PlumeEngine:
         return out
 
     def build(self, fire_name, f_lat, f_lon, t0, h):
-        cache_key = (fire_name, t0, h)
+        cache_key = (fire_name, pd.Timestamp(t0), h)
         if cache_key in self._cache: return self._cache[cache_key]
 
         cities = self.city_states(fire_name, f_lat, f_lon, t0, h)
@@ -234,13 +245,16 @@ class PlumeEngine:
             half_angle = float(np.clip(need + 6, 16, 50))
             reach = max(adv_km, 1.12 * max(c["dist_km"] for c in flagged))
 
-        center = _rotate(_wind_centerline(bearings, speeds, reach), _angdiff(axis, chord))
+        center = _axis_centerline(bearings, speeds, axis, reach)
         hw = reach * math.tan(math.radians(half_angle))
-        
+
+        def geo_outer(width):
+            return _to_geo(_plume_polygon(center, width), axis)
+
+        # widen until every flagged city is inside the outer shape
         max_hw = reach * 1.5
         for _ in range(15):
-            outer = _plume_polygon(center, hw)
-            if all(_in_poly(to_xy(c["lat"], c["lon"], f_lat, f_lon), outer) for c in flagged):
+            if all(_in_poly(to_xy(c["lat"], c["lon"], f_lat, f_lon), geo_outer(hw)) for c in flagged):
                 break
             hw = min(hw * 1.15, max_hw)
             if hw >= max_hw: break
@@ -251,12 +265,12 @@ class PlumeEngine:
         polys, outers = [], []
         for name, ws_, lf in LAYERS:
             c = center if lf == 1 else _truncate(center, lf)
-            poly = _plume_polygon(c, hw * ws_, 0.0)
+            poly = _to_geo(_plume_polygon(c, hw * ws_, 0.0), axis)
             polys.append(dict(kind="main", layer=name, city=None, tooltip=tip, coords=[to_latlon(x, y, f_lat, f_lon) for x, y in poly]))
             if name == "outer":
                 outers.append(poly)
 
-        out = dict(polygons=polys, outers=outers, centerlines=[dict(xy=center, hw=hw, strength=1.0)],
+        out = dict(polygons=polys, outers=outers, centerlines=[dict(xy=_to_geo(center, axis), hw=hw, strength=1.0)],
                    cities=cities, reach_km=reach, axis_bearing=axis, wind_from=wd0, wind_kmh=ws0)
         self._cache[cache_key] = out
         return out
@@ -311,13 +325,35 @@ class PlumeEngine:
             folium.Polygon(p["coords"], color="#7a0f12", weight=st["weight"], fill=True,
                            fill_color=st["fill"], fill_opacity=st["opacity"], tooltip=p["tooltip"]).add_to(m)
         if show_cities:
+            self.add_cities_to_map(m, [(fire_name, f_lat, f_lon)], t0, h)
+        return m
+
+    def add_cities_to_map(self, m, fires, t0, h):
+        """Draw each city ONCE, using its worst status across every fire in `fires`
+        (list of (name, lat, lon)). Cities are shared between fires (e.g. San Francisco), and
+        drawing them per fire let a green marker from one fire hide a red one from another."""
+        import folium
+        agg = {}
+        for name, f_lat, f_lon in fires:
+            P = self.build(name, f_lat, f_lon, t0, h)
             for c in P["cities"]:
-                is_inside = self.in_plume(c["lat"], c["lon"], fire_name, f_lat, f_lon, t0, h)
-                is_danger = c["flagged"] or is_inside
-                col = "#e03131" if is_danger else "#37b26c"
-                status = "FLAGGED" if c["flagged"] else ("IN PLUME" if is_inside else "below threshold")
-                tip = (f"{c['city'].replace('_', ' ')} | {status} | "
-                       f"PM2.5 now {c['pm_now']:.0f} -> +6h forecast {c['pm_6h']:.0f} ug/m3 | at Hour {int(h)}: {c['pm_h']:.0f}")
-                folium.CircleMarker((c["lat"], c["lon"]), radius=7, color="#14181d", weight=2, fill=True,
-                                    fill_color=col, fill_opacity=0.95, tooltip=tip).add_to(m)
+                key = (round(c["lat"], 3), round(c["lon"], 3))
+                inside = self.in_plume(c["lat"], c["lon"], name, f_lat, f_lon, t0, h)
+                e = agg.setdefault(key, dict(c=c, flagged=False, inside=False, fires=[]))
+                e["flagged"] = e["flagged"] or c["flagged"]
+                e["inside"] = e["inside"] or inside
+                e["fires"].append(name)
+                if c["pm_h"] >= e["c"]["pm_h"]:
+                    e["c"] = c
+        for e in agg.values():
+            c = e["c"]
+            is_danger = e["flagged"] or e["inside"]
+            col = "#e03131" if is_danger else "#37b26c"
+            status = "FLAGGED" if e["flagged"] else ("IN PLUME" if e["inside"] else "below threshold")
+            tip = (f"{c['city'].replace('_', ' ')} | {status} | "
+                   f"PM2.5 now {c['pm_now']:.0f} -> +6h forecast {c['pm_6h']:.0f} ug/m3 | at Hour {int(h)}: {c['pm_h']:.0f}")
+            if len(e["fires"]) > 1:
+                tip += f" | affected by {len(e['fires'])} fires"
+            folium.CircleMarker((c["lat"], c["lon"]), radius=7, color="#14181d", weight=2, fill=True,
+                                fill_color=col, fill_opacity=0.95, tooltip=tip).add_to(m)
         return m
