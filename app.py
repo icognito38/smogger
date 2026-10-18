@@ -106,6 +106,8 @@ except Exception as e:
     st.error(f"Could not start the plume engine: {e}")
     st.stop()
 
+META = load_meta(eng.data_dir) if eng.data_dir else {}
+
 # ---------- Helper definitions ----------
 def aqi_label(pm):
     if pm >= 250: return "Hazardous", "crit"
@@ -140,49 +142,49 @@ def reset_hour():
 FIRES = [
     dict(name="Quebec Fire Complex", short="Quebec", origin=(49.0, -73.0), target=(45.5017, -73.5673),
          target_name="Montreal", ha=0, pm=0, reach=0, wind=0, wdir="N", walt="N",
-         country="Canada", region="Quebec", sev="Critical Risk", cls="crit", color="darkred",
+         country="Canada", region="Quebec", sev="Critical Risk", cls="crit",
          staging="Val-d'Or staging area", helibase="Quebec helibase", route="Route 117 southbound",
          hospital="Montreal General Hospital", avoid="Route 113", nearby="Senneterre"),
     dict(name="Sector 4 - North Hills", short="Sector 4", origin=(37.8044, -122.4500), target=(37.7450, -122.3850),
          target_name="Oakridge District", ha=45, pm=480, reach=10.2, wind=28, wdir="NW", walt="NNW",
          country="United States", region="California / San Francisco County",
-         sev="High Risk", cls="crit", score=78, conf=94.2, color="red", staging="North Ridge access road staging area",
+         sev="High Risk", cls="crit", score=78, conf=94.2, staging="North Ridge access road staging area",
          helibase="Sector 4 helibase", route="Route 9 southbound", hospital="Oakridge Community Hospital",
          avoid="Ridge Road", nearby="Marlow Heights"),
     dict(name="East Bay Ridge Corridor", short="East Bay Ridge", origin=(37.8350, -122.2100), target=(37.8030, -122.2700),
          target_name="Lakeshore Flats", ha=78, pm=560, reach=9.5, wind=34, wdir="E", walt="ENE",
          country="United States", region="California / Alameda County",
-         sev="Extreme Risk", cls="crit", score=91, conf=91.7, color="darkred", staging="Grizzly Peak staging area",
+         sev="Extreme Risk", cls="crit", score=91, conf=91.7, staging="Grizzly Peak staging area",
          helibase="Ridge Corridor helibase", route="Route 24 westbound", hospital="Lakeshore Medical Center",
          avoid="Skyline Spur Road", nearby="Hillcrest Terrace"),
     dict(name="Skyline Boulevard", short="Skyline Blvd", origin=(37.6800, -122.4900), target=(37.7200, -122.4300),
          target_name="Bayview Heights", ha=22, pm=310, reach=8.0, wind=21, wdir="SW", walt="WSW",
          country="United States", region="California / San Mateo County",
-         sev="Moderate Risk", cls="warn", score=52, conf=88.4, color="orange", staging="Skyline summit staging area",
+         sev="Moderate Risk", cls="warn", score=52, conf=88.4, staging="Skyline summit staging area",
          helibase="Skyline helibase", route="Route 1 northbound", hospital="Bayview Heights Clinic",
          avoid="Skyline Boulevard", nearby="Crestmoor"),
     dict(name="North Shore Mountains", short="North Shore", origin=(49.3900, -123.0900), target=(49.3300, -123.0000),
          target_name="Burnaby Heights", ha=38, pm=420, reach=10.5, wind=24, wdir="NW", walt="NNW",
          country="Canada", region="British Columbia / Metro Vancouver Region",
-         sev="High Risk", cls="crit", score=74, conf=92.9, color="purple", staging="Seymour staging area",
+         sev="High Risk", cls="crit", score=74, conf=92.9, staging="Seymour staging area",
          helibase="North Shore helibase", route="Highway 1 eastbound", hospital="Burnaby General Hospital",
          avoid="Mount Seymour Parkway", nearby="Capitol Hill"),
     dict(name="Blue Mountains Escarpment", short="Blue Mountains", origin=(-33.7100, 150.3000), target=(-33.7600, 150.3900),
          target_name="Glenbrook Township", ha=120, pm=540, reach=11.0, wind=38, wdir="W", walt="WNW",
          country="Australia", region="New South Wales / Blue Mountains Region",
-         sev="Extreme Risk", cls="crit", score=94, conf=95.1, color="cadetblue", staging="Great Western Highway staging area",
+         sev="Extreme Risk", cls="crit", score=94, conf=95.1, staging="Great Western Highway staging area",
          helibase="Blue Mountains helibase", route="Great Western Highway eastbound", hospital="Nepean Rural Hospital",
          avoid="Bells Line of Road", nearby="Blaxland"),
     dict(name="Twin Peaks Brush Fire", short="Twin Peaks", origin=(37.7544, -122.4477), target=(37.7300, -122.4000),
          target_name="Excelsior District", ha=14, pm=260, reach=6.5, wind=22, wdir="NW", walt="NNW",
          country="United States", region="California / San Francisco County",
-         sev="Moderate Risk", cls="warn", score=49, conf=86.3, color="lightred", staging="Twin Peaks reservoir staging area",
+         sev="Moderate Risk", cls="warn", score=49, conf=86.3, staging="Twin Peaks reservoir staging area",
          helibase="Twin Peaks helipad", route="Route 101 southbound", hospital="Excelsior Medical Center",
          avoid="Portola Drive", nearby="Glen Park"),
     dict(name="Tilden Park Interface", short="Tilden Park", origin=(37.8950, -122.2450), target=(37.8700, -122.2800),
          target_name="Berkeley Flats", ha=31, pm=380, reach=7.0, wind=29, wdir="E", walt="ENE",
          country="United States", region="California / Alameda County",
-         sev="High Risk", cls="crit", score=68, conf=90.5, color="green", staging="Inspiration Point staging area",
+         sev="High Risk", cls="crit", score=68, conf=90.5, staging="Inspiration Point staging area",
          helibase="Tilden helibase", route="Route 80 westbound", hospital="Berkeley General Hospital",
          avoid="Grizzly Peak Boulevard", nearby="Kensington Heights"),
 ]
@@ -496,11 +498,16 @@ if selected and fire["is_ml"]:
     cities = P["cities"]
     n = S["n_flagged"]
     label, lcls = aqi_label(S["peak_pm"])
+    r2 = META.get("metrics", {}).get("R2")
+    conf, conf_txt = ((fire["conf"], "LLM prediction confidence") if "conf" in fire
+                      else (round(r2 * 100, 1), "Model R2 on held-out test set") if r2 is not None else (None, "No model metrics"))
     cards_html = (
         card("Active Monitoring Zone", fire["name"], f"Forecast issued {t0:%d %b %H:%M} UTC", "")
-        + card("Cities Above Alert Threshold", f"{n} of {len(cities)}", f"PM2.5 >= {ALERT_UGM3:.0f} ug/m3 (Hour {h})", "crit" if n >= 3 else "warn" if n else "")
-        + card("Wind Vector at Fire", f"{S['wind_kmh']} km/h ({S['wind_from']})", f"Smoke moving toward {S['travel_to']}", "warn")
-        + card("Downwind Air Quality", f"{label} (PM2.5: {S['peak_pm']:.0f})", f"Peak city: {nice(S['peak_city'])}", lcls)
+        # severity normalised so PM2.5 250 ug/m3 (Hazardous) = 100
+        + card("Predicted Fire Severity", f"{min(100, round(S['peak_pm'] * 100 / 250))} / 100",
+               f"{fire['sev']} - {n} of {len(cities)} cities above {ALERT_UGM3:.0f} ug/m3 (Hour {h})", fire["cls"])
+        + card("Prediction Confidence", f"{conf}%" if conf is not None else "N/A", conf_txt, "")
+        + card("Air Quality Index", f"{S['peak_pm']:.0f}", f"{label} - peak city {nice(S['peak_city'])}", lcls)
     )
 elif selected:
     label, lcls = aqi_label(fire["PM"][h])
@@ -557,7 +564,7 @@ with left:
             x["origin"],
             tooltip=x["name"],  # st_folium reports this on click; used to select the fire
             popup=folium.Popup(f"{x['name']}: {x['sev']}, {ha_text}", max_width=280),
-            icon=folium.Icon(color=x["color"], icon="fire", prefix="fa"),
+            icon=folium.Icon(color="red", icon="fire", prefix="fa"),
         ).add_to(m)
 
     if user:
@@ -571,7 +578,7 @@ with left:
                 else: heat_data.extend(get_heatmap_data(x, h))
             if heat_data:
                 grad = HEAT_GRADIENT if any(x["is_ml"] for x in scope) else {0.2: "#4a6fa5", 0.5: "#c98a0b", 0.8: "#c2410c", 1.0: "#7a0f12"}
-                HeatMap(heat_data, radius=38, blur=28, min_opacity=0.25, max_val=1.0, gradient=grad).add_to(m)
+                HeatMap(heat_data, radius=38, blur=28, min_opacity=0.25, gradient=grad).add_to(m)
         else:
             if h > 0:
                 for x in scope:
@@ -740,8 +747,7 @@ with rc:
 </div>""", unsafe_allow_html=True
                 )
 
-    meta = load_meta(eng.data_dir) if eng.data_dir else {}
-    mm, hw = meta.get("metrics", {}), meta.get("hardware_audit", {})
+    mm, hw = META.get("metrics", {}), META.get("hardware_audit", {})
     st.markdown(
         '<div class="sys">'
         + card("Backend", "LinuxONE Secure Container", f"Connected | {hw.get('architecture', 's390x')}", "")
