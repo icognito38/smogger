@@ -1,8 +1,8 @@
 # NASA FIRMS global hotspot ingestion
 
 This module collects one day of global fire hotspots from the
-`VIIRS_SNPP_NRT` source and writes a standardized JSON batch for the model,
-smoke-impact, and frontend modules.
+`VIIRS_SNPP_NRT` source, checks data availability, and writes a standardized
+JSON batch for the model, smoke-impact, and frontend modules.
 
 ## Configuration
 
@@ -36,7 +36,8 @@ GET https://firms.modaps.eosdis.nasa.gov/api/area/csv/{MAP_KEY}/VIIRS_SNPP_NRT/w
 
 The source endpoint is the CSV form of the requested global area endpoint.
 The requested HTML form is suitable for inspection but CSV is the stable
-machine-readable format.
+machine-readable format. KMZ/KML footprint endpoints are intentionally not
+used by this module.
 
 ## Standardized output
 
@@ -49,6 +50,15 @@ The default output is `data/firms_global_latest.json`:
   "region": "world",
   "day_range": 1,
   "retrieved_at_utc": "2026-10-17T00:00:00+00:00",
+  "data_availability": [
+    {
+      "source": "VIIRS_SNPP_NRT",
+      "available": true,
+      "checked_at_utc": "2026-10-17T00:00:00+00:00",
+      "status_code": 200,
+      "response_excerpt": "..."
+    }
+  ],
   "hotspots": [
     {
       "fire_id": "firms-...",
@@ -65,7 +75,7 @@ The default output is `data/firms_global_latest.json`:
       "fire_radiative_power_mw": 59.85,
       "daynight": "D"
     }
-  ]
+  ],
 }
 ```
 

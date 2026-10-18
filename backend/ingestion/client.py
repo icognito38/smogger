@@ -45,9 +45,11 @@ class FirmsClient:
 
     def fetch_global_hotspots(self) -> FireHotspotBatch:
         failures: list[str] = []
+        availability_results: list[DataAvailabilityResult] = []
         for key_number, key in enumerate(self.config.map_keys, start=1):
             try:
                 availability = self.check_data_availability(key)
+                availability_results.append(availability)
                 if not availability.available:
                     failures.append(
                         f"key {key_number}: availability check failed "
@@ -77,6 +79,7 @@ class FirmsClient:
                     day_range=self.config.day_range,
                     retrieved_at_utc=datetime.now(timezone.utc).isoformat(),
                     hotspots=hotspots,
+                    data_availability=availability_results,
                 )
             except requests.RequestException as error:
                 failures.append(f"key {key_number}: {type(error).__name__}")

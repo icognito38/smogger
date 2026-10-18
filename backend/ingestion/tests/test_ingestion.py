@@ -94,3 +94,4 @@ def test_tries_keys_in_order_until_one_succeeds():
     assert "bad-key" in session.calls[0]
     assert "working-key" in session.calls[1]
     assert "working-key" in session.calls[2]
+    assert all("/kml_fire_footprints/" not in call for call in session.calls)

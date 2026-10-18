@@ -1,4 +1,4 @@
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -30,6 +30,7 @@ class FireHotspotBatch:
     day_range: int
     retrieved_at_utc: str
     hotspots: list[FireHotspot]
+    data_availability: list["DataAvailabilityResult"] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -39,6 +40,9 @@ class FireHotspotBatch:
             "day_range": self.day_range,
             "retrieved_at_utc": self.retrieved_at_utc,
             "hotspots": [hotspot.to_dict() for hotspot in self.hotspots],
+            "data_availability": [
+                availability.to_dict() for availability in self.data_availability
+            ],
         }
 
 
@@ -49,3 +53,6 @@ class DataAvailabilityResult:
     checked_at_utc: str
     status_code: int
     response_excerpt: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
