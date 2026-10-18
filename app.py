@@ -1,6 +1,6 @@
-
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from math import asin, cos, exp, radians, sin, sqrt
 
@@ -37,10 +37,27 @@ header[data-testid="stHeader"], footer { display:none; }
 .badge.crit { background:var(--crimson); } .badge.warn { background:var(--amber); } .badge.ok { background:var(--ok); }
 .zone { background:var(--panel); border:1px solid var(--line); border-left:4px solid var(--amber);
         padding:6px 12px; margin-bottom:6px; font-size:.85rem; }
-/* top bar spans the window: slider takes the free width, the other controls size to their content */
+
+/* Topbar flex adjustments for play button and tiny speed slider */
 .st-key-topbar [data-testid="stColumn"] { flex:0 0 auto !important; width:auto !important; min-width:0 !important; }
-.st-key-topbar [data-testid="stColumn"]:first-child { flex:1 1 0 !important; }
+.st-key-topbar [data-testid="stColumn"]:nth-child(3) { flex:1 1 0 !important; }
 .st-key-topbar [data-testid="stSelectbox"] { min-width:230px; }
+.st-key-topbar [data-testid="stSlider"] { min-width:60px; }
+.st-key-topbar [data-testid="stColumn"]:nth-child(3) [data-testid="stSlider"] { min-width:200px; }
+
+/* Force primary button (Play/Pause) to perfectly match Streamlit's slider red */
+button[data-testid="baseButton-primary"] {
+    background-color: #ff4b4b !important;
+    border-color: #ff4b4b !important;
+    color: white !important;
+    font-size: 1.1rem !important;
+    padding: 0.1rem 0.6rem !important;
+}
+button[data-testid="baseButton-primary"]:hover {
+    background-color: #ff3333 !important;
+    border-color: #ff3333 !important;
+}
+
 .stamp { text-align:right; line-height:24px; padding-bottom:24px; font-size:.85rem; font-weight:600; letter-spacing:.03em; white-space:nowrap; }
 .alert { margin-bottom:10px; display:flex; align-items:center; gap:16px; border:4px solid var(--slate); background:var(--panel); padding:16px 18px; box-sizing:border-box; }
 .alert .ic { flex:none; width:64px; height:64px; display:flex; align-items:center; justify-content:center; font-size:2.3rem; font-weight:800; color:#fff; background:var(--slate); }
@@ -111,14 +128,12 @@ except Exception as e:
 META = load_meta(eng.data_dir) if eng.data_dir else {}
 
 # ---------- Date Faking Engine (2026 Shift) ----------
-# Calculate an offset to display dataset dates as ending exactly around October 12, 2026
 if hasattr(eng, "times") and eng.times:
     _latest = max(eng.times)
-    # Hardcode target date to exactly Oct 12, 2026 at 12:00
     target_date = datetime(2026, 10, 12, 12, 0)
     DATE_OFFSET = target_date - _latest
 else:
-    DATE_OFFSET = datetime(2026, 10, 12) - datetime(2023, 8, 15) # Fallback
+    DATE_OFFSET = datetime(2026, 10, 12) - datetime(2023, 8, 15)
 
 def fake_dt(dt):
     return dt + DATE_OFFSET if dt else dt
@@ -132,13 +147,13 @@ def fake_dstr(dstr):
         return dstr
 
 
-# ---------- NASA FIRMS live hotspots (backend/ingestion writes data/firms_hotspots.json) ----------
+# ---------- NASA FIRMS live hotspots ----------
 @st.cache_resource
 def firms_refresh():
-    return start_refresh_thread()  # once per server process: fetch if >24 h old, then every 24 h
+    return start_refresh_thread()
 
 @st.cache_data
-def firms_data(mtime):  # keyed on file mtime, so a refreshed file is picked up on the next rerun
+def firms_data(mtime):
     return load_hotspots()
 
 FIRMS_REFRESH = firms_refresh()
@@ -164,13 +179,26 @@ def nice(city):
 def card(label, value, delta, cls=""):
     return f'<div class="card {cls}"><div class="l">{label}</div><div class="v">{value}</div><div class="d">{delta}</div></div>'
 
-ALL = "All regions"  # country-level view
+ALL = "All regions"
 
+# ---------- INITIALIZE STATES ----------
 if "hour" not in st.session_state: st.session_state.hour = 0
 if "t0" not in st.session_state: st.session_state.t0 = eng.default_t0()
+if "playing" not in st.session_state: st.session_state.playing = False
+if "play_speed" not in st.session_state: st.session_state.play_speed = 2
+
+# Advance the hour and pause BEFORE the slider is rendered to avoid the widget error
+if st.session_state.playing:
+    delay = 1.5 / st.session_state.play_speed
+    time.sleep(delay)
+    st.session_state.hour = (st.session_state.hour + 1) % 25
+
+def toggle_play():
+    st.session_state.playing = not st.session_state.playing
 
 def reset_hour():
     st.session_state.hour = 0
+    st.session_state.playing = False
 
 # ---------- Active fires setup ----------
 FIRES = [
@@ -223,12 +251,12 @@ FIRES = [
          avoid="Grizzly Peak Boulevard", nearby="Kensington Heights"),
 ]
 
-COUNTRIES = {  # country-level map view
+COUNTRIES = {
     "United States": dict(center=(39.5, -98.5), zoom=4),
     "Canada": dict(center=(56.0, -96.0), zoom=3),
     "Australia": dict(center=(-25.5, 134.0), zoom=4),
 }
-REGION_ZOOM = 11  # county / province view
+REGION_ZOOM = 11
 BOUNDS = {
     "United States": (24.5, -125.0, 49.5, -66.9),
     "Canada": (41.7, -141.0, 83.2, -52.6),
@@ -443,14 +471,26 @@ def on_region():
     st.session_state.pop("active_fire_name", None)
     _drop_stale_click()
 
-t1, t3, t2, t4 = st.container(key="topbar").columns(4, vertical_alignment="bottom")
-t1.slider("Forecast timeline (hours from forecast issue)", 0, 24, key="hour", format="Hour %d")
+# ---------- TOP BAR WITH PLAYBACK CONTROLS ----------
+t_play, t_speed, t_slider, t_date, t_reset, t_stamp = st.container(key="topbar").columns([0.6, 1.2, 3.5, 2.5, 1, 2], vertical_alignment="bottom")
+
+# Play/Pause button
+play_btn_icon = "⏸" if st.session_state.playing else "▶"
+t_play.button(play_btn_icon, on_click=toggle_play, type="primary", use_container_width=True)
+
+# Tiny speed slider (Removed default value kwarg to fix session state warning!)
+t_speed.slider("Speed", 1, 5, format="%dx", key="play_speed", label_visibility="collapsed")
+
+# Main Hour Slider (Removed default value kwarg!)
+t_slider.slider("Forecast timeline (hours from forecast issue)", 0, 24, key="hour", format="Hour %d")
 h = st.session_state.hour
-# Use sorted with reverse=True to display the newest times first in the dropdown list
-t3.selectbox("Forecast issued at", sorted(eng.times, reverse=True), key="t0", format_func=lambda t: fake_dt(t).strftime("%d %b %Y %H:%M UTC"))
-t2.button("Reset to Hour 0", on_click=reset_hour)
+
+# Date & Reset
+t_date.selectbox("Forecast issued at", sorted(eng.times, reverse=True), key="t0", format_func=lambda t: fake_dt(t).strftime("%d %b %Y %H:%M UTC"))
+t_reset.button("Reset", on_click=reset_hour, use_container_width=True)
+
 t0 = st.session_state.t0
-t4.markdown(
+t_stamp.markdown(
     f'<div class="stamp">{"Forecast Issued" if h == 0 else "Forecast Valid"}: '
     f'{(fake_dt(t0) + timedelta(hours=h)).strftime("%b %d, %Y - %H:%M UTC")}</div>',
     unsafe_allow_html=True,
@@ -559,7 +599,6 @@ with left:
                  disabled=src.startswith("Auto") or st.session_state.country is None)
     mode = r3.radio("Map display mode", ["Wildfire Plume & Spread", "Air Quality (AQI) Heat Map"], horizontal=True, label_visibility="collapsed", key="mode")
 
-    # 1. Determine where the app *wants* the camera to point based on logic
     if locked:
         prog_center, prog_zoom = user, REGION_ZOOM
     elif not selected:
@@ -571,41 +610,31 @@ with left:
     else:
         prog_center, prog_zoom = (sum(x["origin"][0] for x in scope) / len(scope), sum(x["origin"][1] for x in scope) / len(scope)), REGION_ZOOM
 
-    # 2. Advanced Map State Tracker - completely eliminates st_folium jumping!
     if "map_center" not in st.session_state:
         st.session_state.map_center = prog_center
         st.session_state.map_zoom = prog_zoom
 
-    # Identify if a structural change happened that warrants a camera jump
     prog_view = (st.session_state.country, st.session_state.region, st.session_state.get("active_fire_name"))
     if "last_prog_view" not in st.session_state:
         st.session_state.last_prog_view = prog_view
 
-    # Identify if an internal change happened where we WANT to preserve the user's pan
     preserve_triggers = (user, mode, h, t0)
     if "last_preserve_triggers" not in st.session_state:
         st.session_state.last_preserve_triggers = preserve_triggers
 
-    # Logic tree for controlling the camera base location
     if st.session_state.last_prog_view != prog_view:
-        # User changed region/country or clicked a fire marker -> Force map to jump there
         st.session_state.last_prog_view = prog_view
         st.session_state.map_center = prog_center
         st.session_state.map_zoom = prog_zoom
-        # Prevent the preserve block below from firing just because user changed
         st.session_state.last_preserve_triggers = preserve_triggers
         
     elif st.session_state.last_preserve_triggers != preserve_triggers:
-        # A click happened (user changed), slider moved, or heatmap toggled. 
-        # We must rebuild the map, but we DO NOT want the camera to reset. 
-        # We pull the *last known coordinates* from immediately before the click/action.
         st.session_state.last_preserve_triggers = preserve_triggers
         prev_map = st.session_state.get("map_res")
         if prev_map and prev_map.get("center"):
             st.session_state.map_center = (prev_map["center"]["lat"], prev_map["center"]["lng"])
             st.session_state.map_zoom = prev_map["zoom"]
 
-    # Initialize map exclusively with our highly-managed center state
     m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom, tiles="OpenStreetMap")
     m.get_root().header.add_child(folium.Element("<style>html,body{height:100%;margin:0;overflow:hidden}#map_div,#map_div2,.folium-map{height:100vh!important}</style>"))
 
@@ -658,7 +687,6 @@ with left:
             if ml_fires:
                 eng.add_cities_to_map(m, ml_fires, t0, h)
 
-    # Note the ABSENCE of center=... kwargs. The initialization logic above does all the heavy lifting silently!
     res = st_folium(m, use_container_width=True, height=560,
                     returned_objects=["last_clicked", "last_object_clicked_tooltip", "center", "zoom"], key="map_res")
     res = res or {}
@@ -821,4 +849,10 @@ with rc:
         + "</div>", unsafe_allow_html=True
     )
 
-
+# ---------- AUTO-PLAY ADVANCE ----------
+# Sleep is placed at the end so the frontend fully renders the page before halting!
+if st.session_state.playing:
+    delay = 1.5 / st.session_state.play_speed
+    time.sleep(delay)
+    st.session_state.hour = (st.session_state.hour + 1) % 25
+    st.rerun()
