@@ -1,6 +1,7 @@
 import folium
 import streamlit as st
 from folium.plugins import HeatMap
+from datetime import datetime, timedelta, timezone
 from math import asin, cos, radians, sin, sqrt
 from streamlit_folium import st_folium
 from streamlit_js_eval import get_geolocation, streamlit_js_eval
@@ -29,6 +30,10 @@ header[data-testid="stHeader"], footer { display:none; }
 .badge.crit { background:var(--crimson); } .badge.warn { background:var(--amber); } .badge.ok { background:var(--ok); }
 .zone { background:var(--panel); border:1px solid var(--line); border-left:4px solid var(--amber);
         padding:6px 12px; margin-bottom:6px; font-size:.85rem; }
+/* top bar spans the window: slider takes the free width, button and timestamp size to their content */
+.st-key-topbar [data-testid="stColumn"] { flex:0 0 auto !important; width:auto !important; min-width:0 !important; }
+.st-key-topbar [data-testid="stColumn"]:first-child { flex:1 1 0 !important; }
+.stamp { text-align:right; line-height:24px; padding-bottom:24px; font-size:.85rem; font-weight:600; letter-spacing:.03em; white-space:nowrap; }
 .alert { margin-bottom:10px; display:flex; align-items:center; gap:16px; border:4px solid var(--slate); background:var(--panel); padding:16px 18px; box-sizing:border-box; }
 .alert .ic { flex:none; width:64px; height:64px; display:flex; align-items:center; justify-content:center; font-size:2.3rem; font-weight:800; color:#fff; background:var(--slate); }
 .alert .t { font-size:1.45rem; font-weight:800; text-transform:uppercase; letter-spacing:.03em; line-height:1.15; }
@@ -84,43 +89,43 @@ FIRES = [
     dict(name="Sector 4 - North Hills", short="Sector 4", origin=(37.8044, -122.4500), target=(37.7450, -122.3850),
          target_name="Oakridge District", ha=45, pm=480, reach=10.2, wind=28, wdir="NW", walt="NNW",
          country="United States", region="California / San Francisco County",
-         sev="High Risk", cls="crit", color="red", staging="North Ridge access road staging area",
+         sev="High Risk", cls="crit", score=78, conf=94.2, staging="North Ridge access road staging area",
          helibase="Sector 4 helibase", route="Route 9 southbound", hospital="Oakridge Community Hospital",
          avoid="Ridge Road", nearby="Marlow Heights"),
     dict(name="East Bay Ridge Corridor", short="East Bay Ridge", origin=(37.8350, -122.2100), target=(37.8030, -122.2700),
          target_name="Lakeshore Flats", ha=78, pm=560, reach=9.5, wind=34, wdir="E", walt="ENE",
          country="United States", region="California / Alameda County",
-         sev="Extreme Risk", cls="crit", color="darkred", staging="Grizzly Peak staging area",
+         sev="Extreme Risk", cls="crit", score=91, conf=91.7, staging="Grizzly Peak staging area",
          helibase="Ridge Corridor helibase", route="Route 24 westbound", hospital="Lakeshore Medical Center",
          avoid="Skyline Spur Road", nearby="Hillcrest Terrace"),
     dict(name="Skyline Boulevard", short="Skyline Blvd", origin=(37.6800, -122.4900), target=(37.7200, -122.4300),
          target_name="Bayview Heights", ha=22, pm=310, reach=8.0, wind=21, wdir="SW", walt="WSW",
          country="United States", region="California / San Mateo County",
-         sev="Moderate Risk", cls="warn", color="orange", staging="Skyline summit staging area",
+         sev="Moderate Risk", cls="warn", score=52, conf=88.4, staging="Skyline summit staging area",
          helibase="Skyline helibase", route="Route 1 northbound", hospital="Bayview Heights Clinic",
          avoid="Skyline Boulevard", nearby="Crestmoor"),
     dict(name="North Shore Mountains", short="North Shore", origin=(49.3900, -123.0900), target=(49.3300, -123.0000),
          target_name="Burnaby Heights", ha=38, pm=420, reach=10.5, wind=24, wdir="NW", walt="NNW",
          country="Canada", region="British Columbia / Metro Vancouver Region",
-         sev="High Risk", cls="crit", color="purple", staging="Seymour staging area",
+         sev="High Risk", cls="crit", score=74, conf=92.9, staging="Seymour staging area",
          helibase="North Shore helibase", route="Highway 1 eastbound", hospital="Burnaby General Hospital",
          avoid="Mount Seymour Parkway", nearby="Capitol Hill"),
     dict(name="Blue Mountains Escarpment", short="Blue Mountains", origin=(-33.7100, 150.3000), target=(-33.7600, 150.3900),
          target_name="Glenbrook Township", ha=120, pm=540, reach=11.0, wind=38, wdir="W", walt="WNW",
          country="Australia", region="New South Wales / Blue Mountains Region",
-         sev="Extreme Risk", cls="crit", color="cadetblue", staging="Great Western Highway staging area",
+         sev="Extreme Risk", cls="crit", score=94, conf=95.1, staging="Great Western Highway staging area",
          helibase="Blue Mountains helibase", route="Great Western Highway eastbound", hospital="Nepean Rural Hospital",
          avoid="Bells Line of Road", nearby="Blaxland"),
     dict(name="Twin Peaks Brush Fire", short="Twin Peaks", origin=(37.7544, -122.4477), target=(37.7300, -122.4000),
          target_name="Excelsior District", ha=14, pm=260, reach=6.5, wind=22, wdir="NW", walt="NNW",
          country="United States", region="California / San Francisco County",
-         sev="Moderate Risk", cls="warn", color="lightred", staging="Twin Peaks reservoir staging area",
+         sev="Moderate Risk", cls="warn", score=49, conf=86.3, staging="Twin Peaks reservoir staging area",
          helibase="Twin Peaks helipad", route="Route 101 southbound", hospital="Excelsior Medical Center",
          avoid="Portola Drive", nearby="Glen Park"),
     dict(name="Tilden Park Interface", short="Tilden Park", origin=(37.8950, -122.2450), target=(37.8700, -122.2800),
          target_name="Berkeley Flats", ha=31, pm=380, reach=7.0, wind=29, wdir="E", walt="ENE",
          country="United States", region="California / Alameda County",
-         sev="High Risk", cls="crit", color="green", staging="Inspiration Point staging area",
+         sev="High Risk", cls="crit", score=68, conf=90.5, staging="Inspiration Point staging area",
          helibase="Tilden helibase", route="Route 80 westbound", hospital="Berkeley General Hospital",
          avoid="Grizzly Peak Boulevard", nearby="Kensington Heights"),
 ]
@@ -329,10 +334,16 @@ def card(label, value, delta, cls=""):
 
 
 # ---------- header, timeline, metrics ----------
-t1, t2 = st.columns([6, 1], vertical_alignment="bottom")
+t1, t2, t3 = st.container(key="topbar").columns(3, vertical_alignment="bottom")  # slider | reset | timestamp
 t1.slider("Forecast timeline (hours from predicted ignition)", 0, 6, key="hour", format="Hour %d")
 t2.button("Reset to Hour 0", on_click=reset_hour)
 h = st.session_state.hour  # re-read after the widget/callback
+st.session_state.setdefault("t0", datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0))
+t3.markdown(
+    f'<div class="stamp">{"Live Date" if h == 0 else "Forecasted Date"}: '
+    f'{(st.session_state.t0 + timedelta(hours=h)).strftime("%b %d, %Y - %H:%M UTC")}</div>',
+    unsafe_allow_html=True,
+)
 cards_slot = st.empty()  # filled once the focus fire (nearest to the user) is known
 
 # ---------- map + advisory ----------
@@ -392,17 +403,16 @@ selected = bool(scope)
 fire = (min(scope, key=lambda x: km_between(user, x["origin"])) if user else scope[0]) if selected else None
 if selected:
     label, lcls = aqi_label(fire["PM"][h])
-    wind_delta = "Shifting" if 2 <= h <= 4 else "Stable"
     cards_html = (
         card("Active Monitoring Zone", fire["name"], f"Nearest of {len(scope)} active fire{'s' if len(scope) > 1 else ''}" if user else "Live Feed", "")
-        + card("Predicted Fire Severity", fire["sev"], f"{fire['HA'][h]} Hectares (Hour {h})", fire["cls"])
-        + card("Wind Vector", f"{fire['WIND'][h]} km/h ({fire['DIR'][h]})", wind_delta, "warn")
-        + card("Downwind Air Quality", f"{label} (PM2.5: {fire['PM'][h]})", "Alert Active" if h else "Baseline", lcls)
+        + card("Predicted Fire Severity", f"{fire['score']} / 100", f"{fire['sev']} - {fire['HA'][h]} Hectares (Hour {h})", fire["cls"])
+        + card("Prediction Confidence", f"{fire['conf']}%", "LLM prediction confidence", "")
+        + card("Air Quality Index", f"{fire['PM'][h]}", f"{label} - " + ("Alert Active" if h else "Baseline"), lcls)
     )
 else:
     label, lcls = "", ""
     cards_html = "".join(card(t, "No region selected", "Select a country and region", "") for t in
-                         ("Active Monitoring Zone", "Predicted Fire Severity", "Wind Vector", "Downwind Air Quality"))
+                         ("Active Monitoring Zone", "Predicted Fire Severity", "Prediction Confidence", "Air Quality Index"))
 cards_slot.markdown(f'<div class="cards">{cards_html}</div>', unsafe_allow_html=True)
 
 with left:
@@ -443,7 +453,7 @@ with left:
             x["origin"],
             tooltip=x["name"],  # st_folium reports this on click; used to select the fire
             popup=folium.Popup(f"{x['name']}: {x['sev']}, {x['HA'][h]} ha at Hour {h}", max_width=280),
-            icon=folium.Icon(color=x["color"], icon="fire", prefix="fa"),
+            icon=folium.Icon(color="red", icon="fire", prefix="fa"),
         ).add_to(m)
     if user:
         folium.Marker(user, tooltip="Your test location", icon=folium.Icon(color="darkblue", icon="user", prefix="fa")).add_to(m)
