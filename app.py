@@ -1,6 +1,6 @@
 import json
 import os
-from math import asin, cos, radians, sin, sqrt
+from math import asin, cos, exp, radians, sin, sqrt
 
 import folium
 import streamlit as st
@@ -8,7 +8,7 @@ from folium.plugins import HeatMap
 from streamlit_folium import st_folium
 from streamlit_js_eval import get_geolocation, streamlit_js_eval
 
-from plume import ALERT_UGM3, HEAT_GRADIENT, IGNITION, PlumeEngine, LAYERS, LAYER_STYLE
+from plume import ALERT_UGM3, HEAT_GRADIENT, PlumeEngine, LAYERS, LAYER_STYLE
 
 st.set_page_config(page_title="Wildfire & Smog Intelligence Platform", layout="wide")
 
@@ -127,21 +127,12 @@ def reset_hour():
     st.session_state.hour = 0
 
 # ---------- Active fires setup ----------
-HA_S = [0, .13, .31, .53, .73, .89, 1]
-PM_S = [.025, .2, .375, .54, .71, .85, 1]
-RE_S = [0, .2, .38, .57, .75, .88, 1]
-WIND_S = [0, 0, 2, 3, 1, 0, -1]
-
-QUEBEC_FIRE = dict(
-    name="Quebec Fire Complex", short="Quebec", origin=IGNITION, target=(45.5017, -73.5673),
-    target_name="Montreal", ha=0, pm=0, reach=0, wind=0, wdir="N", walt="N",
-    country="Canada", region="Quebec", sev="Critical Risk", cls="crit", color="darkred",
-    staging="Val-d'Or staging area", helibase="Quebec helibase", route="Route 117 southbound",
-    hospital="Montreal General Hospital", avoid="Route 113", nearby="Senneterre", is_ml=True
-)
-
 FIRES = [
-    QUEBEC_FIRE,
+    dict(name="Quebec Fire Complex", short="Quebec", origin=(49.0, -73.0), target=(45.5017, -73.5673),
+         target_name="Montreal", ha=0, pm=0, reach=0, wind=0, wdir="N", walt="N",
+         country="Canada", region="Quebec", sev="Critical Risk", cls="crit", color="darkred",
+         staging="Val-d'Or staging area", helibase="Quebec helibase", route="Route 117 southbound",
+         hospital="Montreal General Hospital", avoid="Route 113", nearby="Senneterre"),
     dict(name="Sector 4 - North Hills", short="Sector 4", origin=(37.8044, -122.4500), target=(37.7450, -122.3850),
          target_name="Oakridge District", ha=45, pm=480, reach=10.2, wind=28, wdir="NW", walt="NNW",
          country="United States", region="California / San Francisco County",
@@ -186,6 +177,29 @@ FIRES = [
          avoid="Grizzly Peak Boulevard", nearby="Kensington Heights"),
 ]
 
+# A fire uses the ML engine only if the CSVs contain rows for its exact name.
+_unmatched = eng.unmatched_fires([f["name"] for f in FIRES])
+if _unmatched:
+    print(f"[plume] No ML data for: {_unmatched}. Check Fire_Name values in the CSVs (re-run train_model.py).")
+
+for f in FIRES:
+    f["is_ml"] = eng.has_ml(f["name"])
+
+    if f["is_ml"]:
+        f["HA"] = f["PM"] = f["RE"] = f["WIND"] = [0]*25
+        f["DIR"] = ["N"]*25
+        f["dist"] = km_between(f["origin"], f["target"])
+        f["eta"] = None
+    else:
+        # Fallback mock math (only used for fires with no ML data)
+        f["HA"] = [round(f["ha"] * (1 - exp(-i/4.0))) for i in range(25)]
+        f["PM"] = [round(f["pm"] * min(1.0, i/6.0)) for i in range(25)]
+        f["RE"] = [round(f["reach"] * (i/6.0), 1) for i in range(25)]
+        f["WIND"] = [f["wind"] + 3 * sin(i/3.0) for i in range(25)]
+        f["DIR"] = [f["walt"] if i > 12 else f["wdir"] for i in range(25)]
+        f["dist"] = km_between(f["origin"], f["target"])
+        f["eta"] = next((i for i, r in enumerate(f["RE"]) if r >= f["dist"]), None)
+
 COUNTRIES = {
     "Canada": dict(center=(56.0, -96.0), zoom=3),
     "United States": dict(center=(39.5, -98.5), zoom=4),
@@ -194,27 +208,6 @@ COUNTRIES = {
 REGION_ZOOM = 11
 FIRE_BY_NAME = {f["name"]: f for f in FIRES}
 
-for f in FIRES:
-    if f.get("is_ml"):
-        f["HA"] = f["PM"] = f["RE"] = f["WIND"] = [0]*7
-        f["DIR"] = ["N"]*7
-        f["dist"] = km_between(f["origin"], f["target"])
-        f["eta"] = None
-        continue
-    f["HA"] = [round(f["ha"] * x) for x in HA_S]
-    f["PM"] = [round(f["pm"] * x) for x in PM_S]
-    f["RE"] = [round(f["reach"] * x, 1) for x in RE_S]
-    f["WIND"] = [f["wind"] + x for x in WIND_S]
-    f["DIR"] = [f["walt"] if h_ == 4 else f["wdir"] for h_ in range(7)]
-    f["dist"] = km_between(f["origin"], f["target"])
-    f["eta"] = next((i for i, r in enumerate(f["RE"]) if r >= f["dist"]), None)
-
-# ---------- Mock math logic ----------
-def zone_text(f, h):
-    if h == 0: return "Ignition origin only. No smoke plume projected."
-    if f["RE"][h] < f["dist"]: return f"Plume {f['dist'] - f['RE'][h]:.1f} km from the {f['target_name']} boundary."
-    return f"Leading edge has reached the {f['target_name']}; plume continuing downwind."
-
 def _path(f, h):
     (la0, lo0), (la1, lo1) = f["origin"], f["target"]
     dx, dy = la1 - la0, lo1 - lo0
@@ -222,19 +215,18 @@ def _path(f, h):
     ux, uy = dx / n, dy / n
     return ux, uy, uy, -ux, n * f["RE"][h] / f["dist"], 0.004 + 0.0022 * f["RE"][h]
 
-# NEW: We draw the mock plumes using the exact same multi-layer gradient aesthetic as the ML engine!
 def mock_layers(f, h):
+    if h == 0: return []
     ux, uy, px, py, length, half = _path(f, h)
     o = f["origin"]
     polys = []
+    t_vals = [i / 24.0 for i in range(25)]
     for name, ws_, lf in LAYERS:
         L = length * lf
         W = half * ws_
-        side = lambda s: [
-            (o[0] + ux * L * t + s * px * W * (0.3 + 0.7 * t), o[1] + uy * L * t + s * py * W * (0.3 + 0.7 * t))
-            for t in (i / 6 for i in range(7))
-        ]
-        polys.append((name, side(1) + side(-1)[::-1]))
+        s1 = [(o[0] + ux * L * t + px * W * (0.3 + 0.7 * t), o[1] + uy * L * t + py * W * (0.3 + 0.7 * t)) for t in t_vals]
+        s2 = [(o[0] + ux * L * t - px * W * (0.3 + 0.7 * t), o[1] + uy * L * t - py * W * (0.3 + 0.7 * t)) for t in t_vals]
+        polys.append((name, s1 + s2[::-1]))
     return polys
 
 def get_heatmap_data(f, h):
@@ -258,20 +250,22 @@ def in_poly(pt, poly):
         if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1: inside = not inside
     return inside
 
-def location_alert_ml(user, h, geo_state, t0, cities):
+def location_alert_ml(user, h, geo_state, t0, cities, fire):
     if user is None:
         if geo_state == "pending": return "", "?", "Requesting Location", "Allow location access in the browser prompt. You can also click the map to test a point."
         note = "Device GPS is blocked or unavailable. " if st.session_state.get("fell_back") else ""
         return "", "?", "Awaiting Location", note + "Click anywhere on the map to test a location."
-    dist = km_between(user, IGNITION)
+    dist = km_between(user, fire["origin"])
+    if not cities:
+        return "ok", "OK", "Safe: No Data", "No monitoring data available for this region at the selected time."
     near = min(cities, key=lambda c: km_between(user, (c["lat"], c["lon"])))
     near_txt = f"Nearest monitored city: {nice(near['city'])}, PM2.5 {near['pm_h']:.0f} ug/m3 ({aqi_label(near['pm_h'])[0]})."
-    if eng.in_plume(*user, t0, h):
+    if eng.in_plume(*user, fire["name"], fire["origin"][0], fire["origin"][1], t0, h):
         return "crit", "!", "Danger: Inside Smoke Plume", (f"Your location is under the plume at Hour {h}. {near_txt} Shelter in place or follow official guidance. Fire is {dist:.0f} km away.")
-    eta = eng.eta_hour(*user, t0, h)
+    eta = eng.eta_hour(*user, fire["name"], fire["origin"][0], fire["origin"][1], t0, h)
     if eta:
         return "crit", "!", f"Danger: Plume Arrives Hour {eta}", (f"Smoke is forecast over your location in {eta - h} h. {near_txt} Prepare now. Fire is {dist:.0f} km away.")
-    return "ok", "OK", "Safe: Outside Plume Zone", (f"Fire is {dist:.0f} km away. {near_txt} Your location stays clear of the model's plume through Hour 6. Keep monitoring.")
+    return "ok", "OK", "Safe: Outside Plume Zone", (f"Fire is {dist:.0f} km away. {near_txt} Your location stays clear of the model's plume through Hour 24. Keep monitoring.")
 
 def location_alert_mock(user, h, geo_state, f):
     if user is None:
@@ -280,16 +274,15 @@ def location_alert_mock(user, h, geo_state, f):
         return "", "?", "Awaiting Location", note + "Click anywhere on the map to test a location."
     dist = km_between(user, f["origin"])
     
-    # Quick fix: compute outer plume bounds using the layer system
     mock_pols = mock_layers(f, h)
     outer_poly = mock_pols[0][1] if mock_pols else []
     
-    if h and in_poly(user, outer_poly):
+    if h > 0 and in_poly(user, outer_poly):
         return "crit", "!", "Danger: Inside Smoke Plume", (f"Your location is under the {f['short']} plume at Hour {h} (PM2.5 {f['PM'][h]} ug/m3, {aqi_label(f['PM'][h])[0]}). Shelter in place or evacuate if ordered. Fire is {dist:.1f} km away.")
-    eta = next((i for i in range(h + 1, 7) if in_poly(user, mock_layers(f, i)[0][1])), None)
+    eta = next((i for i in range(h + 1, 25) if mock_layers(f, i) and in_poly(user, mock_layers(f, i)[0][1])), None)
     if eta:
         return "crit", "!", f"Danger: Plume Arrives Hour {eta}", (f"Smoke from {f['name']} is forecast over your location in {eta - h} h. Prepare to evacuate now. Fire is {dist:.1f} km away.")
-    return "ok", "OK", "Safe: Outside Plume Zone", (f"The nearest fire, {f['name']}, is {dist:.1f} km away. Your location stays clear of its plume through Hour 6. Keep monitoring.")
+    return "ok", "OK", "Safe: Outside Plume Zone", (f"The nearest fire, {f['name']}, is {dist:.1f} km away. Your location stays clear of its plume through Hour 24. Keep monitoring.")
 
 # ---------- Dropdown controls state setup ----------
 ALL = "All regions"
@@ -301,7 +294,6 @@ st.session_state.setdefault("country", FIRES[0]["country"])
 st.session_state.setdefault("region", FIRES[0]["region"])
 st.session_state.setdefault("view", "region")
 
-# NEW: We strictly manage map bounds here so it doesn't jump randomly
 st.session_state.setdefault("map_center", COUNTRIES[FIRES[0]["country"]]["center"])
 st.session_state.setdefault("map_zoom", COUNTRIES[FIRES[0]["country"]]["zoom"])
 
@@ -351,7 +343,7 @@ def on_region():
 
 # ---------- Header & Core App Logic ----------
 t1, t3, t2 = st.columns([5, 3, 1.4], vertical_alignment="bottom")
-t1.slider("Forecast timeline (hours from forecast issue)", 0, 6, key="hour", format="Hour %d")
+t1.slider("Forecast timeline (hours from forecast issue)", 0, 24, key="hour", format="Hour %d")
 h = st.session_state.hour
 t0 = st.session_state.t0
 
@@ -384,15 +376,9 @@ with rc:
             st.session_state.locsrc = "Auto-detect Device GPS"
             
     geo = get_geolocation(component_key=f"geo_{st.session_state.get('geo_n', 0)}")
+    
     if geo and "coords" in geo:
-        lat, lon = geo["coords"]["latitude"], geo["coords"]["longitude"]
-        old_gps = st.session_state.get("gps_loc")
-        # NEW: Debounce GPS coordinates by 50 meters so map doesn't drift/bounce
-        if old_gps is None or km_between(old_gps, (lat, lon)) > 0.05:
-            st.session_state.gps_loc = (lat, lon)
-            if not st.session_state.get("fire_touched"):
-                update_map_view((lat, lon), REGION_ZOOM)
-                
+        st.session_state.gps_loc = (geo["coords"]["latitude"], geo["coords"]["longitude"])
     elif geo and "error" in geo:
         st.session_state.gps_loc = None
         
@@ -425,8 +411,8 @@ else:
 cities = []
 
 if fire.get("is_ml"):
-    S = eng.summary(t0, h)
-    P = eng.build(t0, h)
+    S = eng.summary(fire["name"], fire["origin"][0], fire["origin"][1], t0, h)
+    P = eng.build(fire["name"], fire["origin"][0], fire["origin"][1], t0, h)
     cities = P["cities"]
     n = S["n_flagged"]
     label, lcls = aqi_label(S["peak_pm"])
@@ -441,12 +427,12 @@ if fire.get("is_ml"):
     )
 else:
     label, lcls = aqi_label(fire["PM"][h])
-    wind_delta = "Shifting" if 2 <= h <= 4 else "Stable"
+    wind_delta = "Shifting" if 2 <= h <= 12 else "Stable"
     cards_slot.markdown(
         '<div class="cards">'
         + card("Active Monitoring Zone", fire["name"], f"Nearest of {len(scope)} active fire{'s' if len(scope) > 1 else ''}" if user else "Live Feed", "")
         + card("Predicted Fire Severity", fire["sev"], f"{fire['HA'][h]} Hectares (Hour {h})", fire["cls"])
-        + card("Wind Vector", f"{fire['WIND'][h]} km/h ({fire['DIR'][h]})", wind_delta, "warn")
+        + card("Wind Vector", f"{round(fire['WIND'][h], 1)} km/h ({fire['DIR'][h]})", wind_delta, "warn")
         + card("Downwind Air Quality", f"{label} (PM2.5: {fire['PM'][h]})", "Alert Active" if h else "Baseline", lcls)
         + "</div>",
         unsafe_allow_html=True,
@@ -464,11 +450,9 @@ with left:
     st.session_state.prev_sel = (st.session_state.country, st.session_state.region)
     mode = r3.radio("Map display mode", ["Wildfire Plume & Spread", "Air Quality (AQI) Heat Map"], horizontal=True, label_visibility="collapsed", key="mode")
     
-    # NEW: Rely strictly on explicit session_state variables to prevent jumpy map
     m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom, tiles="OpenStreetMap")
     m.get_root().header.add_child(folium.Element("<style>html,body{height:100%;margin:0;overflow:hidden}#map_div,#map_div2,.folium-map{height:100vh!important}</style>"))
     
-    # NEW: We only draw markers inside the `scope` to accurately reflect the active dropdown filter
     for x in scope:
         sel = x is fire
         if sel: folium.CircleMarker(x["origin"], radius=22, color="#e03131", weight=3, fill=True, fill_opacity=0.12).add_to(m)
@@ -486,7 +470,7 @@ with left:
     if mode.startswith("Air"):
         heat_data = []
         for x in scope:
-            if x.get("is_ml"): heat_data.extend(eng.heat_points(t0, h))
+            if x.get("is_ml"): heat_data.extend(eng.heat_points(x["name"], x["origin"][0], x["origin"][1], t0, h))
             else: heat_data.extend(get_heatmap_data(x, h))
         if heat_data:
             grad = HEAT_GRADIENT if any(x.get("is_ml") for x in scope) else {0.2: "#4a6fa5", 0.5: "#c98a0b", 0.8: "#c2410c", 1.0: "#7a0f12"}
@@ -494,17 +478,27 @@ with left:
     elif h > 0:
         for x in scope:
             if x.get("is_ml"):
-                eng.add_to_map(m, t0, h)
+                eng.add_to_map(m, x["name"], x["origin"][0], x["origin"][1], t0, h)
             else:
-                # NEW: Feed the exact identical visual renderer to all mock fires!
                 for layer_name, poly in mock_layers(x, h):
                     st_ = LAYER_STYLE[layer_name]
                     folium.Polygon(poly, color="#7a0f12", weight=st_["weight"], fill=True, fill_color=st_["fill"], fill_opacity=st_["opacity"], tooltip=f"{x['short']} Hour {h}: {x['HA'][h]} ha, PM2.5 {x['PM'][h]} ug/m3, reach {x['RE'][h]} km").add_to(m)
                 
-    res = st_folium(m, use_container_width=True, height=560, returned_objects=["last_clicked", "last_object_clicked_tooltip"], key="map")
+    # Camera fix: the view is only changed by explicit actions (country / region / fire pick) through
+    # session_state. We no longer read center/zoom back from the map on every pan, which caused a
+    # rerun on each move that re-applied a stale view and made the camera jump back.
+    res = st_folium(
+        m,
+        use_container_width=True,
+        height=560,
+        center=st.session_state.map_center,
+        zoom=st.session_state.map_zoom,
+        returned_objects=["last_clicked", "last_object_clicked_tooltip"],
+        key="map",
+    )
     res = res or {}
-    tt = res.get("last_object_clicked_tooltip")
     
+    tt = res.get("last_object_clicked_tooltip")
     if tt in FIRE_BY_NAME and tt != st.session_state.get("last_tt"):
         st.session_state.last_tt = tt
         st.session_state.pending_fire = tt
@@ -517,7 +511,7 @@ with left:
         st.session_state.click_loc = (c["lat"], c["lng"])
         st.rerun()
 
-acls, icon, atitle, abody = location_alert_ml(user, h, geo_state, t0, cities) if fire.get("is_ml") else location_alert_mock(user, h, geo_state, fire)
+acls, icon, atitle, abody = location_alert_ml(user, h, geo_state, t0, cities, fire) if fire.get("is_ml") else location_alert_mock(user, h, geo_state, fire)
 if user is None and st.session_state.get("gate_warn"):
     acls, icon, atitle, abody = "warn", "!", "Location Required", GATE_MSG
 elif user is not None:
@@ -528,10 +522,16 @@ alert_slot.markdown(f'<div class="alert {acls}"><div class="ic">{icon}</div><div
 
 with rc:
     with st.container(key="advisory"):
-        gov, pub = st.tabs(["Government / Municipal Command", "Public / Citizen Advisory"])
+        gov, pub, analytics = st.tabs(["Command", "Advisory", "Data & Analytics"])
+        
         if fire.get("is_ml"):
             fl = sorted([c for c in cities if c["flagged"]], key=lambda c: c["dist_km"])
             fl_names = ", ".join(nice(c["city"]) for c in fl) or "none"
+            
+            truth_seq = "".join(f"<li><b>{nice(c['city'])}</b>: Forecasted <b>{c['pm_6h']:.0f}</b> ug/m3 | Actual recorded was <b>{c['actual_6h']:.0f}</b> ug/m3 <span style='opacity:0.7'>(Baseline no-change guess: {c['pm_now']:.0f})</span></li>" for c in cities if c["flagged"])
+            if not truth_seq:
+                truth_seq = "<li>No cities above threshold in this window.</li>"
+                
             seq = "".join(f"<li><b>{i}. {nice(c['city'])}</b> ({c['dist_km']:.0f} km from fire): PM2.5 {c['pm_h']:.0f} ug/m3, {aqi_label(c['pm_h'])[0]}. Issue {'a shelter-in-place order' if c['pm_h'] >= 150 else 'an air quality advisory'}.</li>" for i, c in enumerate(fl, 1)) or "<li>No city above threshold. Continue monitoring.</li>"
             threat, tcls = ("High", "crit") if n >= 3 else ("Elevated", "warn") if n else ("Low", "ok")
 
@@ -544,16 +544,11 @@ with rc:
 <li>Plume leading edge: <b>{S['reach_km']:.0f} km</b> {S['travel_to']} of origin</li>
 <li>Peak PM2.5: <b>{S['peak_pm']:.0f} ug/m3</b> in {nice(S['peak_city'])} ({label})</li>
 <li>Threat level: <span class="badge {tcls}">{threat}</span></li></ul>
-<h4>Resource Pre-Positioning Orders</h4>
-<ul><li>Mobile air-quality monitors to: {fl_names}</li>
-<li>Health system surge readiness (respiratory cases) in: {fl_names}</li>
-<li>Respirator and HEPA filter stockpiles released to county health</li></ul>
+<h4>6h Forecast vs Ground Truth Replay</h4>
+<p style="font-size:.84rem; color:var(--mute); margin-bottom:4px;">As this system runs on real historical open-meteo data, we can directly verify the model's accuracy at the 6-hour prediction horizon:</p>
+<ul>{truth_seq}</ul>
 <h4>Alert Sequencing (nearest to fire first)</h4>
 <ul>{seq}</ul>
-<h4>Inter-Agency Coordination</h4>
-<ul><li>Fire and environment agencies: unified smoke-incident command</li>
-<li>Public health: shelter and respirator distribution</li>
-<li>Meteorological service: hourly wind-shift updates to the dispersion model</li></ul>
 </div>""", unsafe_allow_html=True
                 )
             with pub:
@@ -572,69 +567,65 @@ with rc:
 <li>Emergency information line: 211</li></ul>
 </div>""", unsafe_allow_html=True
                 )
+                
+            with analytics:
+                city_analytics = "".join(f"<li><b>{nice(c['city'])}</b>: {c['dist_km']:.0f} km away. <b>PM2.5 Current:</b> {c['pm_now']:.1f} | <b>PM2.5 +6h Predict:</b> {c['pm_6h']:.1f} | <b>Flagged:</b> {c['flagged']}</li>" for c in sorted(cities, key=lambda c: c["dist_km"]))
+                if not city_analytics:
+                    city_analytics = "<li>No API sensor data fetched for this timestep.</li>"
+                st.markdown(
+                    f"""<div class="panel">
+<h4>Live Model Features (Data Source: Open-Meteo)</h4>
+<ul><li>Wind Origin: <b>{S['wind_from']} ({round(P['wind_from'], 1)}°)</b> at <b>{S['wind_kmh']} km/h</b></li>
+<li>Plume Axis Bearing: <b>{round(P['axis_bearing'], 1)}°</b></li></ul>
+<h4>City State Vectors & Projections</h4>
+<ul>{city_analytics}</ul>
+<p style="font-size:.84rem; color:var(--mute); margin-top:8px;">The Random Forest relies heavily on these city coordinates, along-wind vectors, and 3-to-12 hour PM2.5 lagging signals to predict exactly what the AQI will be six hours from this moment.</p>
+</div>""", unsafe_allow_html=True
+                )
+                
         else:
-            f_, T = fire, fire["target_name"]
-            eta_txt = f"Hour {f_['eta']}" if f_["eta"] is not None else "after Hour 6"
             with gov:
                 st.markdown(
                     f"""<div class="panel">
-<div class="zone"><span class="badge {lcls}">Hour {h}</span>&nbsp; {f_['name']}: {zone_text(f_, h)}</div>
-<h4>Strategic Incident Metrics</h4>
-<ul><li>Projected burn area: <b>{f_['HA'][h]} ha</b> (6-hour peak {f_['ha']} ha)</li>
-<li>Plume leading edge: <b>{f_['RE'][h]} km</b> from origin toward {T}</li>
-<li>Peak PM2.5: <b>{f_['PM'][h]} ug/m3</b> ({label})</li>
-<li>Threat level: <span class="badge {f_['cls']}">{f_['sev']}</span></li>
-<li>Active incidents in view: <b>{len(scope)}</b> ({', '.join(x['short'] for x in scope)}); nearest to your location: <b>{f_['short']}</b></li></ul>
-<h4>Resource Pre-Positioning Orders</h4>
-<ul><li>Engine Strike Teams 1-3 to the {f_['staging']}</li>
-<li>Air tanker and helitanker standby at {f_['helibase']}</li>
-<li>Mobile air-quality monitors to {T} and {f_['nearby']}</li>
-<li>EMS surge units to {f_['hospital']}</li></ul>
-<h4>Mandatory Evacuation Sequencing</h4>
-<ul><li><b>Phase 1</b> (Hour 0-2): {f_['short']} residences and trailheads</li>
-<li><b>Phase 2</b> (Hour 2-4): {f_['nearby']}, special-needs and care facilities first</li>
-<li><b>Phase 3</b> (smoke arrival: {eta_txt}): {T}, via {f_['route']}</li></ul>
-<h4>Inter-Agency Coordination</h4>
-<ul><li>State fire agency: unified command established at the {f_['short']} post</li>
-<li>Highway patrol: contraflow on {f_['route']} on Phase 3 order</li>
-<li>County health: shelter and respirator distribution</li>
-<li>Meteorological service: hourly wind-shift updates ({f_['DIR'][h]} at {f_['WIND'][h]} km/h) to the dispersion model</li></ul>
+<div class="zone"><span class="badge {lcls}">Hour {h}</span>&nbsp; {fire['name']}</div>
+<h4>Incident Metrics (MOCK DATA)</h4>
+<ul><li>Projected burn area: <b>{fire['HA'][h]} ha</b> (24-hour peak {fire['HA'][-1]} ha)</li>
+<li>Plume leading edge: <b>{fire['RE'][h]} km</b> from origin</li>
+<li>Peak PM2.5: <b>{fire['PM'][h]} ug/m3</b> ({label})</li>
+<li>Threat level: <span class="badge {fire['cls']}">{fire['sev']}</span></li></ul>
+<p style="font-size:.84rem; color:var(--mute); margin-top:8px;">This fire lacks real-time Open-Meteo sensor API linkage. Values shown are synthetic mathematical projections, not ML predictions.</p>
 </div>""", unsafe_allow_html=True
                 )
             with pub:
                 st.markdown(
                     f"""<div class="panel">
-<div class="zone"><span class="badge {lcls}">{label}</span>&nbsp; {f_['name']} air quality forecast for Hour {h}. {zone_text(f_, h)}</div>
-<h4>Shelter in Place ({T})</h4>
-<ul><li>Stay indoors. Close all windows, doors and fireplace dampers.</li>
-<li>Turn off fans that draw in outside air; set HVAC to recirculate.</li></ul>
-<h4>Air Filtration</h4>
-<ul><li>Run HEPA purifiers in one sealed room.</li>
-<li>If you must go outside, wear a fitted N95 or P100 respirator. Cloth and surgical masks do not protect against smoke.</li>
-<li>Children, older adults and people with asthma or heart conditions should avoid all exertion.</li></ul>
-<h4>Evacuation Corridors</h4>
-<ul><li><b>{T}:</b> leave via {f_['route']} only when ordered. Do not travel toward the fire ({f_['short']}).</li>
-<li>Avoid {f_['avoid']}; it is reserved for emergency vehicles.</li>
-<li>Take medications, documents, pets and a 3-day supply of water.</li></ul>
-<h4>Stay Informed</h4>
-<ul><li>Follow official alerts on the county emergency channel and emergency radio.</li>
-<li>Emergency information line: 211</li></ul>
+<div class="zone"><span class="badge {lcls}">{label}</span>&nbsp; {fire['name']} air quality mock projection.</div>
+<h4>General Advisory</h4>
+<ul><li>Stay indoors if smoke is visible.</li>
+<li>Avoid rigorous outdoor activity.</li></ul>
+</div>""", unsafe_allow_html=True
+                )
+            with analytics:
+                st.markdown(
+                    f"""<div class="panel">
+<h4>No Model Analytics Available</h4>
+<p style="font-size:.84rem; color:var(--mute);">Please run the updated ML training script. The dataset is missing the <i>test_predictions.csv</i> rows for {fire['name']}.</p>
 </div>""", unsafe_allow_html=True
                 )
 
-    if fire.get("is_ml"):
+    if getattr(eng, "demo", False):
+        st.markdown(
+            '<div class="sys">'
+            + card("Backend", "LinuxONE Secure Container", f"Connected", "")
+            + card("Model", "Fallback / Demo Mode", "Missing real ML output", "warn")
+            + "</div>", unsafe_allow_html=True
+        )
+    else:
         meta = load_meta(eng.data_dir) if eng.data_dir else {}
         mm, hw = meta.get("metrics", {}), meta.get("hardware_audit", {})
         st.markdown(
             '<div class="sys">'
             + card("Backend", "LinuxONE Secure Container", f"Connected | {hw.get('architecture', 's390x')}", "")
-            + card("Model", f"Random Forest ({hw.get('ml_backend', 'n/a')})", ("Demo data (synthetic)" if getattr(eng, "demo", False) else f"6h MAE {mm.get('MAE', 'n/a')} ug/m3 | {mm.get('MAE_improvement_vs_baseline_pct', 'n/a')}% vs persistence"), "")
-            + "</div>", unsafe_allow_html=True
-        )
-    else:
-        st.markdown(
-            '<div class="sys">'
-            + card("Backend", "LinuxONE Secure Container", "Connected", "")
-            + card("Model", "Random Forest + Dispersion Grid", "Inference 42 ms (-8 ms)", "")
+            + card("Model", f"Random Forest ({hw.get('ml_backend', 'n/a')})", f"6h MAE {mm.get('MAE', 'n/a')} ug/m3 | {mm.get('MAE_improvement_vs_baseline_pct', 'n/a')}% vs persistence", "")
             + "</div>", unsafe_allow_html=True
         )

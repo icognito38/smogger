@@ -1,1 +1,168 @@
-{"features": ["Distance_Miles", "Wind_Speed_kmh", "Along_Wind_kmh", "Cross_Wind_kmh", "Along_Wind_Roll12", "PM2_5", "PM2_5_Roll6", "PM2_5_Lag1", "PM2_5_Lag3", "PM2_5_Lag6", "PM2_5_Lag12", "PM2_5_Trend3", "Hour", "Upstream_PM25_Lag3", "Upstream_PM25_Lag6", "Plume_Now", "Plume_6h"]}
+{
+    "model_intent": "6-Hour Ahead PM2.5 Forecasting (predicts 6h change on top of current level)",
+    "trained_at_utc": "2026-10-18T01:17:33+00:00",
+    "fires": [
+        "Quebec Fire Complex",
+        "Sector 4 - North Hills",
+        "East Bay Ridge Corridor",
+        "Skyline Boulevard",
+        "North Shore Mountains",
+        "Blue Mountains Escarpment",
+        "Twin Peaks Brush Fire",
+        "Tilden Park Interface"
+    ],
+    "features": [
+        "Distance_Miles",
+        "Wind_Speed_kmh",
+        "Along_Wind_kmh",
+        "Cross_Wind_kmh",
+        "Along_Wind_Roll12",
+        "PM2_5",
+        "PM2_5_Roll6",
+        "PM2_5_Lag1",
+        "PM2_5_Lag3",
+        "PM2_5_Lag6",
+        "PM2_5_Lag12",
+        "PM2_5_Trend3",
+        "Hour",
+        "Upstream_PM25_Lag3",
+        "Upstream_PM25_Lag6"
+    ],
+    "data": {
+        "cities_per_fire": {
+            "Quebec Fire Complex": [
+                "Quebec_City",
+                "Montreal",
+                "Ottawa",
+                "Toronto",
+                "Albany",
+                "New_York",
+                "Philadelphia",
+                "Washington_DC"
+            ],
+            "Sector 4 - North Hills": [
+                "San_Francisco",
+                "Oakland",
+                "Berkeley",
+                "Daly_City",
+                "San_Mateo",
+                "San_Jose",
+                "Richmond",
+                "Sausalito"
+            ],
+            "East Bay Ridge Corridor": [
+                "Oakland",
+                "Berkeley",
+                "Alameda",
+                "Walnut_Creek",
+                "San_Leandro",
+                "Hayward",
+                "San_Francisco",
+                "Richmond"
+            ],
+            "Skyline Boulevard": [
+                "Pacifica",
+                "Daly_City",
+                "San_Francisco",
+                "San_Mateo",
+                "Half_Moon_Bay",
+                "South_San_Francisco",
+                "Burlingame",
+                "Redwood_City"
+            ],
+            "North Shore Mountains": [
+                "Vancouver",
+                "North_Vancouver",
+                "Burnaby",
+                "West_Vancouver",
+                "Richmond_BC",
+                "Surrey",
+                "Squamish",
+                "Coquitlam"
+            ],
+            "Blue Mountains Escarpment": [
+                "Penrith",
+                "Parramatta",
+                "Sydney",
+                "Richmond_NSW",
+                "Lithgow",
+                "Windsor",
+                "Blacktown",
+                "Springwood"
+            ],
+            "Twin Peaks Brush Fire": [
+                "San_Francisco",
+                "Daly_City",
+                "Oakland",
+                "Berkeley",
+                "South_San_Francisco",
+                "San_Mateo",
+                "Sausalito",
+                "Pacifica"
+            ],
+            "Tilden Park Interface": [
+                "Berkeley",
+                "Oakland",
+                "Richmond",
+                "El_Cerrito",
+                "Orinda",
+                "Walnut_Creek",
+                "Albany_CA",
+                "San_Rafael"
+            ]
+        },
+        "date_range": [
+            "2023-05-15",
+            "2023-07-15"
+        ],
+        "train_rows": 61824,
+        "test_rows": 31872,
+        "test_start": "2023-06-25 00:00:00"
+    },
+    "metrics": {
+        "MAE": 2.45,
+        "R2": 0.68,
+        "baseline_persistence_MAE": 2.74,
+        "baseline_persistence_R2": 0.62,
+        "MAE_improvement_vs_baseline_pct": 10.5
+    },
+    "alert_check": {
+        "threshold_ugm3": 35.0,
+        "test_hours_above_threshold": 565,
+        "model": {
+            "precision": 0.72,
+            "recall": 0.5,
+            "f1": 0.59
+        },
+        "persistence": {
+            "precision": 0.59,
+            "recall": 0.59,
+            "f1": 0.59
+        }
+    },
+    "model_file_reload_verified": true,
+    "hardware_audit": {
+        "architecture": "s390x",
+        "os_platform": "Linux-6.8.0-147-generic-s390x-with-glibc2.39",
+        "cpu_threads_used": 3,
+        "byteorder": "big",
+        "ml_backend": "snapml_1.17.2"
+    },
+    "feature_importances": {
+        "Distance_Miles": 0.0684,
+        "Wind_Speed_kmh": 0.0398,
+        "Along_Wind_kmh": 0.0387,
+        "Cross_Wind_kmh": 0.0328,
+        "Along_Wind_Roll12": 0.0394,
+        "PM2_5": 0.0961,
+        "PM2_5_Roll6": 0.1054,
+        "PM2_5_Lag1": 0.1194,
+        "PM2_5_Lag3": 0.0758,
+        "PM2_5_Lag6": 0.0616,
+        "PM2_5_Lag12": 0.0758,
+        "PM2_5_Trend3": 0.0569,
+        "Hour": 0.0954,
+        "Upstream_PM25_Lag3": 0.0471,
+        "Upstream_PM25_Lag6": 0.0476
+    }
+}
