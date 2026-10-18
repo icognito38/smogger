@@ -198,11 +198,13 @@ ALL = "All regions"  # country-level view; the active fire is then the country's
 
 
 def regions_of(country):
+    if country is None:
+        return []
     return [ALL] + list(dict.fromkeys(x["region"] for x in FIRES if x["country"] == country))
 
 
-st.session_state.setdefault("country", FIRES[0]["country"])
-st.session_state.setdefault("region", FIRES[0]["region"])
+st.session_state.setdefault("country", None)  # None = nothing selected yet (manual mode starts blank)
+st.session_state.setdefault("region", None)
 st.session_state.setdefault("view", "region")  # which dropdown last drove the map: "country" or "region"
 if "pending_fire" in st.session_state:  # set by a marker click; applied before the dropdowns are created
     _f = FIRE_BY_NAME[st.session_state.pop("pending_fire")]
@@ -210,8 +212,9 @@ if "pending_fire" in st.session_state:  # set by a marker click; applied before 
     _cl = st.session_state.get("click_loc")
     if _cl and not in_bounds(_cl, BOUNDS[_f["region"]]):
         st.session_state.pop("click_loc")
-st.session_state.setdefault("prev_sel", (st.session_state.country, st.session_state.region))
-if st.session_state.region not in regions_of(st.session_state.country):
+if st.session_state.country is None:
+    st.session_state.region = None
+elif st.session_state.region not in regions_of(st.session_state.country):
     st.session_state.region = ALL
 
 
@@ -219,31 +222,15 @@ def reset_hour():
     st.session_state.hour = 0
 
 
-GATE_MSG = ("Please allow location access, or in manual mode click a point strictly within the selected "
-            "country/region (see the outlined boundary), before selecting regions.")
-
-
 def _drop_stale_click():
     """Manual mode: a click outside the newly chosen country/region no longer counts as a location."""
     cl = st.session_state.get("click_loc")
-    if cl and st.session_state.get("locsrc", "").startswith("Click") and not in_bounds(
+    if cl and st.session_state.country and st.session_state.get("locsrc", "").startswith("Click") and not in_bounds(
             cl, bounds_of(st.session_state.country, st.session_state.region)):
         st.session_state.pop("click_loc")
 
 
-def _gated():
-    """Revert the dropdowns and warn when no user location exists yet."""
-    if st.session_state.get("located"):
-        return False
-    st.session_state.country, st.session_state.region = st.session_state.prev_sel
-    st.session_state.gate_warn = True
-    st.toast(GATE_MSG)
-    return True
-
-
 def on_country():
-    if _gated():
-        return
     st.session_state.region = ALL  # cascade: country-level view
     st.session_state.view = "country"
     st.session_state.fire_touched = True
@@ -251,8 +238,6 @@ def on_country():
 
 
 def on_region():
-    if _gated():
-        return
     st.session_state.view = "country" if st.session_state.region == ALL else "region"
     st.session_state.fire_touched = True
     _drop_stale_click()
@@ -315,13 +300,15 @@ def in_poly(pt, poly):
     return inside
 
 
-def location_alert(user, h, geo_state, f):
+def location_alert(user, h, geo_state, f, selected=True):
     """(css class, icon text, title, body) for the active location against fire f at forecast hour h."""
     if user is None:
         if geo_state == "pending":
             return "", "?", "Requesting Location", "Allow location access in the browser prompt. You can also click the map to test a point."
         note = "Device GPS is blocked or unavailable. " if st.session_state.get("fell_back") else ""
-        return "", "?", "Awaiting Location", note + "Click anywhere on the map to test a location."
+        if not selected:
+            return "", "?", "Select a Region", note + "Choose a country and region from the dropdowns, then click a point inside the outlined boundary."
+        return "", "?", "Awaiting Location", note + "Click a point inside the outlined boundary to test a location."
     dist = km_between(user, f["origin"])
     if h and in_poly(user, plume(f, h)):
         return "crit", "!", "Danger: Inside Smoke Plume", (
@@ -400,32 +387,38 @@ with rc:
 
 # Fires in the selected region (or the whole country); the timeline drives all of them together.
 scope = [x for x in FIRES if x["country"] == st.session_state.country and st.session_state.region in (ALL, x["region"])]
+selected = bool(scope)
 # Focus fire = nearest to the user's location; it drives the cards, alert and advisory.
-fire = min(scope, key=lambda x: km_between(user, x["origin"])) if user else scope[0]
-label, lcls = aqi_label(fire["PM"][h])
-wind_delta = "Shifting" if 2 <= h <= 4 else "Stable"
-cards_slot.markdown(
-    '<div class="cards">'
-    + card("Active Monitoring Zone", fire["name"], f"Nearest of {len(scope)} active fire{'s' if len(scope) > 1 else ''}" if user else "Live Feed", "")
-    + card("Predicted Fire Severity", fire["sev"], f"{fire['HA'][h]} Hectares (Hour {h})", fire["cls"])
-    + card("Wind Vector", f"{fire['WIND'][h]} km/h ({fire['DIR'][h]})", wind_delta, "warn")
-    + card("Downwind Air Quality", f"{label} (PM2.5: {fire['PM'][h]})", "Alert Active" if h else "Baseline", lcls)
-    + "</div>",
-    unsafe_allow_html=True,
-)
+fire = (min(scope, key=lambda x: km_between(user, x["origin"])) if user else scope[0]) if selected else None
+if selected:
+    label, lcls = aqi_label(fire["PM"][h])
+    wind_delta = "Shifting" if 2 <= h <= 4 else "Stable"
+    cards_html = (
+        card("Active Monitoring Zone", fire["name"], f"Nearest of {len(scope)} active fire{'s' if len(scope) > 1 else ''}" if user else "Live Feed", "")
+        + card("Predicted Fire Severity", fire["sev"], f"{fire['HA'][h]} Hectares (Hour {h})", fire["cls"])
+        + card("Wind Vector", f"{fire['WIND'][h]} km/h ({fire['DIR'][h]})", wind_delta, "warn")
+        + card("Downwind Air Quality", f"{label} (PM2.5: {fire['PM'][h]})", "Alert Active" if h else "Baseline", lcls)
+    )
+else:
+    label, lcls = "", ""
+    cards_html = "".join(card(t, "No region selected", "Select a country and region", "") for t in
+                         ("Active Monitoring Zone", "Predicted Fire Severity", "Wind Vector", "Downwind Air Quality"))
+cards_slot.markdown(f'<div class="cards">{cards_html}</div>', unsafe_allow_html=True)
 
 with left:
     r1, r2, r3 = st.columns([3, 5, 5], vertical_alignment="center")
-    r1.selectbox("Country", list(COUNTRIES), key="country", on_change=on_country,
-                 label_visibility="collapsed", format_func=lambda c: f"Country: {c}", disabled=locked)
-    r2.selectbox("County / Province / Region", regions_of(st.session_state.country), key="region", on_change=on_region,
-                 label_visibility="collapsed", format_func=lambda r: f"Region: {r}", disabled=locked)
-    st.session_state.prev_sel = (st.session_state.country, st.session_state.region)  # restore point for the gate
+    r1.selectbox("Country", list(COUNTRIES), index=None, placeholder="Select country", key="country", on_change=on_country,
+                 label_visibility="collapsed", format_func=lambda c: f"Country: {c}", disabled=src.startswith("Auto"))
+    r2.selectbox("County / Province / Region", regions_of(st.session_state.country), index=None, placeholder="Select region",
+                 key="region", on_change=on_region,
+                 label_visibility="collapsed", format_func=lambda r: f"Region: {r}", disabled=src.startswith("Auto") or st.session_state.country is None)
     mode = r3.radio("Map display mode", ["Wildfire Plume & Spread", "Air Quality (AQI) Heat Map"],
                     horizontal=True, label_visibility="collapsed", key="mode")
     # Open on the user's GPS fix until a dropdown is used; then country view or the selected region's fire
     if locked:
         center, zoom = user, REGION_ZOOM
+    elif not selected:
+        center, zoom = (20.0, -10.0), 2  # world overview: all fire markers, no region yet
     elif st.session_state.view == "country":
         center, zoom = COUNTRIES[st.session_state.country]["center"], COUNTRIES[st.session_state.country]["zoom"]
     else:
@@ -435,12 +428,13 @@ with left:
     m.get_root().header.add_child(
         folium.Element("<style>html,body{height:100%;margin:0;overflow:hidden}#map_div,#map_div2,.folium-map{height:100vh!important}</style>")
     )
-    sw_ne = bounds_of(st.session_state.country, st.session_state.region)
-    folium.Rectangle(
-        [[sw_ne[0], sw_ne[1]], [sw_ne[2], sw_ne[3]]], color="#4a6fa5", weight=3, dash_array="10 8",
-        fill=True, fill_opacity=0.04,
-        tooltip=f"Boundary: {st.session_state.country if st.session_state.region == ALL else st.session_state.region}",
-    ).add_to(m)
+    if selected:
+        sw_ne = bounds_of(st.session_state.country, st.session_state.region)
+        folium.Rectangle(
+            [[sw_ne[0], sw_ne[1]], [sw_ne[2], sw_ne[3]]], color="#4a6fa5", weight=3, dash_array="10 8",
+            fill=True, fill_opacity=0.04,
+            tooltip=f"Boundary: {st.session_state.country if st.session_state.region == ALL else st.session_state.region}",
+        ).add_to(m)
     for x in FIRES:
         sel = x is fire
         if sel:
@@ -453,10 +447,10 @@ with left:
         ).add_to(m)
     if user:
         folium.Marker(user, tooltip="Your test location", icon=folium.Icon(color="darkblue", icon="user", prefix="fa")).add_to(m)
-    if mode.startswith("Air"):
+    if mode.startswith("Air") and selected:
         HeatMap([p for x in scope for p in get_heatmap_data(x, h)], radius=38, blur=28, min_opacity=0.25,
                 gradient={0.2: "#4a6fa5", 0.5: "#c98a0b", 0.8: "#c2410c", 1.0: "#7a0f12"}).add_to(m)
-    elif h > 0:
+    elif h > 0 and selected:
         for x in scope:
             folium.Polygon(
                 plume(x, h),
@@ -473,7 +467,7 @@ with left:
     tt = res.get("last_object_clicked_tooltip")
     if tt in FIRE_BY_NAME and tt != st.session_state.get("last_tt"):  # new marker click
         st.session_state.last_tt = tt
-        if not locked and FIRE_BY_NAME[tt] not in scope:  # GPS lock ignores marker selection too
+        if src.startswith("Click") and selected and FIRE_BY_NAME[tt] not in scope:  # manual mode, after a dropdown choice
             st.session_state.pending_fire = tt
             st.session_state.view = "region"
             st.session_state.fire_touched = True
@@ -483,21 +477,20 @@ with left:
     if c and c != st.session_state.get("last_click"):  # each click is handled once
         st.session_state.last_click = c
         if src.startswith("Click"):  # in Auto mode map clicks are ignored
-            if in_bounds(c, bounds_of(st.session_state.country, st.session_state.region)):
+            if not selected:
+                st.session_state.warn = ("Select a Region First", "Select a country and region from the dropdowns, then click inside its outline.")
+                st.toast("Select a country and region first.")
+            elif in_bounds(c, bounds_of(st.session_state.country, st.session_state.region)):
                 st.session_state.click_loc = c
                 st.rerun()
-            st.session_state.oob = True
-            st.toast("That point is outside the selected boundary.")
+            else:
+                st.session_state.warn = ("Outside Selected Region", "You have to click within the region.")
+                st.toast("You have to click within the region.")
 
-acls, icon, atitle, abody = location_alert(user, h, geo_state, fire)
-if st.session_state.pop("oob", False):
-    _n = st.session_state.country if st.session_state.region == ALL else st.session_state.region
-    acls, icon, atitle, abody = "warn", "!", "Outside Selected Region", (
-        f"Click a point strictly within {_n}: stay inside the dashed outline on the map.")
-elif user is None and st.session_state.get("gate_warn"):
-    acls, icon, atitle, abody = "warn", "!", "Location Required", GATE_MSG
-elif user is not None:
-    st.session_state.gate_warn = False
+acls, icon, atitle, abody = location_alert(user, h, geo_state, fire, selected)
+_w = st.session_state.pop("warn", None)
+if _w:
+    acls, icon, atitle, abody = "warn", "!", *_w
 if user:
     abody += f'<div style="opacity:.7;margin-top:4px;font-size:.78rem">Location source: {"Map click" if src.startswith("Click") else "Device GPS"}</div>'
 alert_slot.markdown(
@@ -505,14 +498,16 @@ alert_slot.markdown(
     unsafe_allow_html=True,
 )
 
-f_, T = fire, fire["target_name"]
-eta_txt = f"Hour {f_['eta']}" if f_["eta"] is not None else "after Hour 6"
+f_ = fire
+T = fire["target_name"] if selected else ""
+eta_txt = (f"Hour {f_['eta']}" if f_["eta"] is not None else "after Hour 6") if selected else ""
+PH = '<div class="panel"><div class="zone">Select a country and region from the dropdowns to load the incident advisory.</div></div>'
 with rc:
     with st.container(key="advisory"):
         gov, pub = st.tabs(["Government / Municipal Command", "Public / Citizen Advisory"])
         with gov:
             st.markdown(
-                f"""<div class="panel">
+                PH if not selected else f"""<div class="panel">
 <div class="zone"><span class="badge {lcls}">Hour {h}</span>&nbsp; {f_['name']}: {zone_text(f_, h)}</div>
 <h4>Strategic Incident Metrics</h4>
 <ul><li>Projected burn area: <b>{f_['HA'][h]} ha</b> (6-hour peak {f_['ha']} ha)</li>
@@ -539,7 +534,7 @@ with rc:
             )
         with pub:
             st.markdown(
-                f"""<div class="panel">
+                PH if not selected else f"""<div class="panel">
 <div class="zone"><span class="badge {lcls}">{label}</span>&nbsp; {f_['name']} air quality forecast for Hour {h}. {zone_text(f_, h)}</div>
 <h4>Shelter in Place ({T})</h4>
 <ul><li>Stay indoors. Close all windows, doors and fireplace dampers.</li>
