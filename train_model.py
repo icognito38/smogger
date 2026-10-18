@@ -30,7 +30,58 @@ from pathlib import Path
 _HERE = Path.cwd()
 REPO_ROOT = next((p for p in (_HERE, *_HERE.parents) if (p / "firms_live.py").exists()), _HERE)
 sys.path.insert(0, str(REPO_ROOT))
-from firms_live import live_fires  # noqa: E402
+try:
+    from firms_live import live_fires  # the app's own clustering, when firms_live.py is next to the notebook
+except ImportError:
+    # Self-contained copy of firms_live.live_fires (keep in sync) so the notebook also runs on its own,
+    # e.g. on the LinuxONE machine where only this file and the data folder exist.
+    from collections import defaultdict
+    from math import cos, radians
+
+    CONF_SCORE = {"l": 25.0, "n": 50.0, "h": 90.0}  # VIIRS low / nominal / high
+    CELL_DEG = 0.1
+    MIN_DETECTIONS = 3
+    FIRES_PER_REGION = 2
+
+
+    LIVE_COUNTRY = "Live NASA FIRMS"
+    CLUSTERS = 10  # densest clusters worldwide that become selectable regions
+    PAD_DEG = 0.3
+
+
+    def live_fires(hotspots, date=None, clusters=CLUSTERS, cell=CELL_DEG):
+        """Densest hotspot clusters worldwide -> (fire dicts keyed like app.py FIRES, {region: bounds box})."""
+        cells = defaultdict(list)
+        for p in hotspots:
+            cells[(int(p["latitude"] // cell), int(p["longitude"] // cell))].append(p)
+        top = sorted((c for c in cells.values() if len(c) >= MIN_DETECTIONS), key=len, reverse=True)[:clusters]
+        fires, bounds = [], {}
+        for i, pts in enumerate(top, 1):
+            n = len(pts)
+            lat = sum(p["latitude"] for p in pts) / n
+            lon = sum(p["longitude"] for p in pts) / n
+            conf = round(sum(CONF_SCORE.get(p["confidence"], 50.0) for p in pts) / n, 1)
+            high = sum(p["confidence"] == "h" for p in pts) / n
+            score = min(100, round(20 + 60 * min(n, 30) / 30 + 20 * high))
+            sev, cls = ("Extreme Risk", "crit") if score >= 80 else ("High Risk", "crit") if score >= 60 else ("Moderate Risk", "warn")
+            region = f"Cluster {i} ({lat:.2f}, {lon:.2f})"
+            bounds[region] = (min(p["latitude"] for p in pts) - PAD_DEG, min(p["longitude"] for p in pts) - PAD_DEG,
+                              max(p["latitude"] for p in pts) + PAD_DEG, max(p["longitude"] for p in pts) + PAD_DEG)
+            # shortcut: FIRMS has no wind, so smoke is assumed to drift east (prevailing westerlies); use real wind once available
+            target = (lat, lon + 10 / (111.32 * cos(radians(lat))))
+            fires.append(dict(
+                name=f"FIRMS Cluster {i}", short=f"Cluster {i}", origin=(lat, lon), target=target,
+                target_name="downwind communities", ha=n * 14,  # one VIIRS pixel ~ 375 m x 375 m ~ 14 ha
+                pm=min(560, 120 + 15 * n), reach=min(15.0, 4 + 0.3 * n), wind=20, wdir="W", walt="WSW",
+                country=LIVE_COUNTRY, region=region, sev=sev, cls=cls, score=score, conf=conf,
+                staging="nearest fire station staging area", helibase="regional helibase",
+                route="the designated evacuation route", hospital="the nearest hospital",
+                avoid="fire-access roads", nearby="adjacent settlements",
+                live=True, detections=n, firms_date=date,
+            ))
+        return fires, bounds
+
+
 
 FIRMS_JSON = Path(os.environ.get("FIRMS_JSON", REPO_ROOT / "backend" / "data" / "firms_global_latest.json"))
 MAX_FIRES = int(os.environ.get("MAX_FIRES", 8))
