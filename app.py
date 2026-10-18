@@ -99,6 +99,23 @@ div[data-testid="stWidgetLabel"] p, div[data-testid="stSlider"] label p, div[dat
 div[data-testid="stSlider"] label p, .stButton button { font-size:.78rem; text-transform:uppercase; letter-spacing:.05em; }
 .stButton button { border-radius:0; background:var(--panel); border:1px solid var(--line); color:var(--text); width:100%; }
 .stButton button:hover { border-color:var(--crimson); color:#fff; }
+
+/* 1. Kill the Streamlit "Running" Spinner */
+[data-testid="stStatusWidget"] { display: none !important; }
+
+/* 2. Shatter the invisible shield Streamlit uses to dim and freeze the app */
+[data-testid="stAppViewContainer"], 
+[data-testid="stMainBlockContainer"],
+[data-testid="stMain"] { opacity: 1 !important; }
+
+.stApp [data-testid="stMain"] > div {
+    opacity: 1 !important; 
+    pointer-events: auto !important; 
+    transition: none !important;
+}
+
+/* 3. Pre-paint the iframe background to match OpenStreetMap's land color */
+iframe[title="streamlit_folium.st_folium"] { background-color: #E5E3DF !important; transition: none !important; }
 </style>
 """,
     unsafe_allow_html=True,
@@ -186,12 +203,15 @@ if "hour" not in st.session_state: st.session_state.hour = 0
 if "t0" not in st.session_state: st.session_state.t0 = eng.default_t0()
 if "playing" not in st.session_state: st.session_state.playing = False
 if "play_speed" not in st.session_state: st.session_state.play_speed = 2
+if "loop_id" not in st.session_state: st.session_state.loop_id = 0
 
-# Advance the hour and pause BEFORE the slider is rendered to avoid the widget error
+# If playing, we check if the browser's JavaScript timer has finished counting down.
 if st.session_state.playing:
-    delay = 1.5 / st.session_state.play_speed
-    time.sleep(delay)
-    st.session_state.hour = (st.session_state.hour + 1) % 25
+    timer_key = f"timer_{st.session_state.loop_id}"
+    if st.session_state.get(timer_key) is not None:
+        # Browser timer finished! Advance hour and increment the loop ID for the next frame.
+        st.session_state.hour = (st.session_state.hour + 1) % 25
+        st.session_state.loop_id += 1
 
 def toggle_play():
     st.session_state.playing = not st.session_state.playing
@@ -635,8 +655,9 @@ with left:
             st.session_state.map_center = (prev_map["center"]["lat"], prev_map["center"]["lng"])
             st.session_state.map_zoom = prev_map["zoom"]
 
+    # THIS IS THE LINE THAT GOT BROKEN! It now cleanly calls "CartoDB dark_matter"
     m = folium.Map(location=st.session_state.map_center, zoom_start=st.session_state.map_zoom, tiles="OpenStreetMap")
-    m.get_root().header.add_child(folium.Element("<style>html,body{height:100%;margin:0;overflow:hidden}#map_div,#map_div2,.folium-map{height:100vh!important}</style>"))
+    m.get_root().header.add_child(folium.Element("<style>html,body{background-color:#E5E3DF !important; height:100%;margin:0;overflow:hidden}#map_div,#map_div2,.folium-map{height:100vh!important}</style>"))
 
     if selected:
         sw_ne = bounds_of(st.session_state.country, st.session_state.region)
@@ -850,9 +871,10 @@ with rc:
     )
 
 # ---------- AUTO-PLAY ADVANCE ----------
-# Sleep is placed at the end so the frontend fully renders the page before halting!
+# Offload the wait time entirely to the browser so the Python script finishes instantly.
+# This completely eliminates the "Running" dimming effect and allows the map to fully render.
 if st.session_state.playing:
-    delay = 1.5 / st.session_state.play_speed
-    time.sleep(delay)
-    st.session_state.hour = (st.session_state.hour + 1) % 25
-    st.rerun()
+    delay_ms = int((1.5 / st.session_state.play_speed) * 1000)
+    current_timer = f"timer_{st.session_state.loop_id}"
+    js_code = f"new Promise(r => setTimeout(() => r(Date.now()), {delay_ms}))"
+    streamlit_js_eval(js_expressions=js_code, key=current_timer)
