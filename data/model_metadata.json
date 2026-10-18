@@ -1,6 +1,6 @@
 {
     "model_intent": "6-Hour Ahead PM2.5 Forecasting (predicts 6h change on top of current level)",
-    "trained_at_utc": "2026-10-18T01:17:33+00:00",
+    "trained_at_utc": "2026-10-18T03:46:48+00:00",
     "fires": [
         "Quebec Fire Complex",
         "Sector 4 - North Hills",
@@ -26,7 +26,14 @@
         "PM2_5_Trend3",
         "Hour",
         "Upstream_PM25_Lag3",
-        "Upstream_PM25_Lag6"
+        "Upstream_PM25_Lag6",
+        "Along_Wind_80m_kmh",
+        "Along_Wind_120m_kmh",
+        "Along_Wind_180m_kmh",
+        "Cross_Wind_180m_kmh",
+        "Along_Wind_Profile_kmh",
+        "Along_Wind_Profile_Roll12",
+        "Wind_Veer_10_180_deg"
     ],
     "data": {
         "cities_per_fire": {
@@ -117,7 +124,8 @@
         ],
         "train_rows": 61824,
         "test_rows": 31872,
-        "test_start": "2023-06-25 00:00:00"
+        "test_start": "2023-06-25 00:00:00",
+        "weather_hourly": "wind_speed_10m,wind_direction_10m,wind_direction_80m,wind_direction_120m,wind_direction_180m"
     },
     "metrics": {
         "MAE": 2.45,
@@ -130,9 +138,9 @@
         "threshold_ugm3": 35.0,
         "test_hours_above_threshold": 565,
         "model": {
-            "precision": 0.72,
-            "recall": 0.5,
-            "f1": 0.59
+            "precision": 0.71,
+            "recall": 0.49,
+            "f1": 0.58
         },
         "persistence": {
             "precision": 0.59,
@@ -149,20 +157,27 @@
         "ml_backend": "snapml_1.17.2"
     },
     "feature_importances": {
-        "Distance_Miles": 0.0684,
-        "Wind_Speed_kmh": 0.0398,
-        "Along_Wind_kmh": 0.0387,
-        "Cross_Wind_kmh": 0.0328,
-        "Along_Wind_Roll12": 0.0394,
-        "PM2_5": 0.0961,
-        "PM2_5_Roll6": 0.1054,
-        "PM2_5_Lag1": 0.1194,
-        "PM2_5_Lag3": 0.0758,
-        "PM2_5_Lag6": 0.0616,
-        "PM2_5_Lag12": 0.0758,
-        "PM2_5_Trend3": 0.0569,
-        "Hour": 0.0954,
-        "Upstream_PM25_Lag3": 0.0471,
-        "Upstream_PM25_Lag6": 0.0476
+        "Distance_Miles": 0.055,
+        "Wind_Speed_kmh": 0.0285,
+        "Along_Wind_kmh": 0.021,
+        "Cross_Wind_kmh": 0.0202,
+        "Along_Wind_Roll12": 0.0289,
+        "PM2_5": 0.0906,
+        "PM2_5_Roll6": 0.1026,
+        "PM2_5_Lag1": 0.102,
+        "PM2_5_Lag3": 0.0711,
+        "PM2_5_Lag6": 0.0528,
+        "PM2_5_Lag12": 0.0673,
+        "PM2_5_Trend3": 0.0521,
+        "Hour": 0.0826,
+        "Upstream_PM25_Lag3": 0.0371,
+        "Upstream_PM25_Lag6": 0.044,
+        "Along_Wind_80m_kmh": 0.016,
+        "Along_Wind_120m_kmh": 0.0181,
+        "Along_Wind_180m_kmh": 0.019,
+        "Cross_Wind_180m_kmh": 0.0195,
+        "Along_Wind_Profile_kmh": 0.0154,
+        "Along_Wind_Profile_Roll12": 0.0362,
+        "Wind_Veer_10_180_deg": 0.0201
     }
 }
