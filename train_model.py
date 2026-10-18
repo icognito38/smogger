@@ -20,52 +20,29 @@ import requests
 # ==========================================
 print("Step 1: Configuring Fires, Cities & Data Limits...")
 
-# Each fire "name" must match the "name" in the FIRES list in the Streamlit app EXACTLY,
-# and (lat, lon) must match that fire's "origin" there.
-FIRES = [
-    dict(name="Quebec Fire Complex", lat=49.0, lon=-73.0, cities={
-        "Quebec_City": (46.8138, -71.2079), "Montreal": (45.5016, -73.5672),
-        "Ottawa": (45.4215, -75.6971), "Toronto": (43.6510, -79.3470),
-        "Albany": (42.6526, -73.7562), "New_York": (40.7128, -74.0060),
-        "Philadelphia": (39.9526, -75.1652), "Washington_DC": (38.9072, -77.0369)}),
-    dict(name="Sector 4 - North Hills", lat=37.8044, lon=-122.4500, cities={
-        "San_Francisco": (37.7749, -122.4194), "Oakland": (37.8044, -122.2712),
-        "Berkeley": (37.8715, -122.2730), "Daly_City": (37.6879, -122.4702),
-        "San_Mateo": (37.5630, -122.3255), "San_Jose": (37.3382, -121.8863),
-        "Richmond": (37.9358, -122.3478), "Sausalito": (37.8591, -122.4853)}),
-    dict(name="East Bay Ridge Corridor", lat=37.8350, lon=-122.2100, cities={
-        "Oakland": (37.8044, -122.2712), "Berkeley": (37.8715, -122.2730),
-        "Alameda": (37.7652, -122.2416), "Walnut_Creek": (37.9101, -122.0652),
-        "San_Leandro": (37.7249, -122.1561), "Hayward": (37.6688, -122.0808),
-        "San_Francisco": (37.7749, -122.4194), "Richmond": (37.9358, -122.3478)}),
-    dict(name="Skyline Boulevard", lat=37.6800, lon=-122.4900, cities={
-        "Pacifica": (37.6138, -122.4869), "Daly_City": (37.6879, -122.4702),
-        "San_Francisco": (37.7749, -122.4194), "San_Mateo": (37.5630, -122.3255),
-        "Half_Moon_Bay": (37.4636, -122.4286), "South_San_Francisco": (37.6547, -122.4077),
-        "Burlingame": (37.5841, -122.3661), "Redwood_City": (37.4852, -122.2364)}),
-    dict(name="North Shore Mountains", lat=49.3900, lon=-123.0900, cities={
-        "Vancouver": (49.2827, -123.1207), "North_Vancouver": (49.3200, -123.0724),
-        "Burnaby": (49.2488, -122.9805), "West_Vancouver": (49.3277, -123.1600),
-        "Richmond_BC": (49.1666, -123.1336), "Surrey": (49.1913, -122.8490),
-        "Squamish": (49.7016, -123.1558), "Coquitlam": (49.2838, -122.7932)}),
-    dict(name="Blue Mountains Escarpment", lat=-33.7100, lon=150.3000, cities={
-        "Penrith": (-33.7510, 150.6942), "Parramatta": (-33.8150, 151.0011),
-        "Sydney": (-33.8688, 151.2093), "Richmond_NSW": (-33.5983, 150.7510),
-        "Lithgow": (-33.4833, 150.1500), "Windsor": (-33.6094, 150.8155),
-        "Blacktown": (-33.7710, 150.9060), "Springwood": (-33.6997, 150.5640)}),
-    dict(name="Twin Peaks Brush Fire", lat=37.7544, lon=-122.4477, cities={
-        "San_Francisco": (37.7749, -122.4194), "Daly_City": (37.6879, -122.4702),
-        "Oakland": (37.8044, -122.2712), "Berkeley": (37.8715, -122.2730),
-        "South_San_Francisco": (37.6547, -122.4077), "San_Mateo": (37.5630, -122.3255),
-        "Sausalito": (37.8591, -122.4853), "Pacifica": (37.6138, -122.4869)}),
-    dict(name="Tilden Park Interface", lat=37.8950, lon=-122.2450, cities={
-        "Berkeley": (37.8715, -122.2730), "Oakland": (37.8044, -122.2712),
-        "Richmond": (37.9358, -122.3478), "El_Cerrito": (37.9161, -122.3108),
-        "Orinda": (37.8771, -122.1797), "Walnut_Creek": (37.9101, -122.0652),
-        "Albany_CA": (37.8869, -122.2978), "San_Rafael": (37.9735, -122.5311)}),
-]
+# Fires come from the NASA FIRMS hotspot file (backend/data/firms_global_latest.json, written by the
+# backend ingestion). The densest hotspot clusters become the fires; the cities around each one are looked up
+# by API (OpenStreetMap Overpass), and each fire is labelled with its nearest place (OpenStreetMap Nominatim).
+# Fire names come from firms_live.live_fires, the same function app.py uses, so the app matches them by name
+# when it reads the same hotspot file.
+from pathlib import Path
 
-start_date, end_date = "2023-05-15", "2023-07-15"
+_HERE = Path.cwd()
+REPO_ROOT = next((p for p in (_HERE, *_HERE.parents) if (p / "firms_live.py").exists()), _HERE)
+sys.path.insert(0, str(REPO_ROOT))
+from firms_live import live_fires  # noqa: E402
+
+FIRMS_JSON = Path(os.environ.get("FIRMS_JSON", REPO_ROOT / "backend" / "data" / "firms_global_latest.json"))
+MAX_FIRES = int(os.environ.get("MAX_FIRES", 8))
+CITIES_PER_FIRE = 8
+MIN_CITIES = 3
+CITY_RADIUS_KM = 150
+TRAIN_DAYS = 60   # weather / PM2.5 history fetched before the hotspot date
+TEST_DAYS = 14    # last part of that window is the chronological test set
+USER_AGENT = "smogger-datathon/1.0 (wildfire smoke research prototype)"  # required by OSM API usage policy
+OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+NOMINATIM_URL = "https://nominatim.openstreetmap.org/reverse"
+
 HORIZON_H = 6  # forecast horizon in hours
 
 # Wind direction at four heights. Smoke lofted by the fire rides the upper levels, ground smoke the 10 m wind.
@@ -109,6 +86,89 @@ def get_json(url, tries=4):
 
 
 _weather_cache, _pm_cache = {}, {}
+
+
+def nearby_cities(lat, lon, n=CITIES_PER_FIRE, radius_km=CITY_RADIUS_KM):
+    """Cities/towns around a point from OpenStreetMap (Overpass): largest population first, then nearest."""
+    query = (f'[out:json][timeout:60];node(around:{radius_km * 1000},{lat},{lon})'
+             f'[place~"^(city|town)$"][name];out;')
+    for i in range(4):
+        try:
+            r = requests.post(OVERPASS_URL, data={"data": query}, headers={"User-Agent": USER_AGENT}, timeout=90)
+            r.raise_for_status()
+            elements = r.json()["elements"]
+            break
+        except Exception as e:
+            last = e
+            time.sleep(5 * (i + 1))
+    else:
+        raise last
+    seen, rows = set(), []
+    for e in elements:
+        name = e["tags"].get("name:en") or e["tags"]["name"]
+        key = name.replace(" ", "_")
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            pop = int(str(e["tags"].get("population", "0")).replace(",", "").split()[0])
+        except ValueError:
+            pop = 0
+        rows.append((key, e["lat"], e["lon"], pop, haversine(lat, lon, e["lat"], e["lon"])))
+    rows.sort(key=lambda r: (-r[3], r[4]))
+    time.sleep(1)
+    return {k: (la, lo) for k, la, lo, _, _ in rows[:n]}
+
+
+def place_name(lat, lon):
+    """Nearest named place for a fire (OpenStreetMap Nominatim reverse geocoding, max 1 request/second)."""
+    try:
+        r = requests.get(NOMINATIM_URL, params={"lat": lat, "lon": lon, "format": "json", "zoom": 10},
+                         headers={"User-Agent": USER_AGENT}, timeout=30)
+        r.raise_for_status()
+        a = r.json().get("address", {})
+        town = a.get("city") or a.get("town") or a.get("village") or a.get("county") or a.get("state")
+        return ", ".join(x for x in (town, a.get("state"), a.get("country")) if x) or "unknown"
+    except Exception:
+        return "unknown"
+    finally:
+        time.sleep(1.1)
+
+
+def fires_from_firms(path=FIRMS_JSON, max_fires=MAX_FIRES):
+    """(FIRES list for the training loop, hotspot date) from the FIRMS JSON."""
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    hotspots = data["hotspots"]
+    # both ingestion schemas: v1 has acquired_at_utc, v2 has date
+    dates = [h.get("date") or h.get("acquired_at_utc", "")[:10] for h in hotspots]
+    fire_date = data.get("date") or max(d for d in dates if d)
+    clusters, _ = live_fires(hotspots, fire_date, clusters=max_fires)
+    fires = []
+    for c in clusters:
+        lat, lon = c["origin"]
+        try:
+            cities = nearby_cities(lat, lon)
+        except Exception as e:
+            print(f"  {c['name']}: city lookup failed ({e}); skipped")
+            continue
+        if len(cities) < MIN_CITIES:
+            print(f"  {c['name']}: only {len(cities)} cities within {CITY_RADIUS_KM} km; skipped")
+            continue
+        place = place_name(lat, lon)
+        fires.append(dict(name=c["name"], lat=lat, lon=lon, place=place, detections=c["detections"], cities=cities))
+        print(f"  {c['name']} ({place}): {c['detections']} hotspots, cities: {', '.join(cities)}")
+    return fires, fire_date
+
+
+print(f"Reading NASA FIRMS hotspots from {FIRMS_JSON} ...")
+FIRES, FIRE_DATE = fires_from_firms()
+if not FIRES:
+    raise RuntimeError("No FIRMS cluster had enough nearby cities. Check the JSON path and network access.")
+_end = pd.Timestamp(FIRE_DATE)
+start_date = (_end - pd.Timedelta(days=TRAIN_DAYS)).strftime("%Y-%m-%d")
+end_date = _end.strftime("%Y-%m-%d")
+print(f"{len(FIRES)} fires, hotspot date {FIRE_DATE}, weather/PM2.5 window {start_date} .. {end_date}")
 
 def weather_url(lat, lon, base=WEATHER_ARCHIVE_URL):
     return (f"{base}?latitude={lat}&longitude={lon}"
@@ -264,7 +324,7 @@ if skipped:
 # 5. CHRONOLOGICAL TRAIN/TEST SPLIT
 # ==========================================
 print("Step 3: Chronological Train/Test Split...")
-split_time = pd.Timestamp("2023-06-25")
+split_time = pd.Timestamp(end_date) - pd.Timedelta(days=TEST_DAYS)
 train_mask = df["Time"] < (split_time - pd.Timedelta(hours=HORIZON_H))
 test_mask = df["Time"] >= split_time
 
@@ -374,6 +434,9 @@ metadata = {
     "features": features,
     "data": {
         "cities_per_fire": {f["name"]: list(f["cities"].keys()) for f in FIRES if f["name"] in built},
+        "fire_places": {f["name"]: {"place": f["place"], "lat": round(f["lat"], 4), "lon": round(f["lon"], 4),
+                                    "hotspots": f["detections"]} for f in FIRES if f["name"] in built},
+        "firms_source": {"file": str(FIRMS_JSON), "hotspot_date": FIRE_DATE},
         "date_range": [start_date, end_date],
         "train_rows": int(len(X_train)),
         "test_rows": int(len(X_test)),
