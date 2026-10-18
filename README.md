@@ -35,3 +35,28 @@ WildfireAI is a prototype for research and demonstration purposes. Smoke dispers
 ---
 
 **Built with AI for a safer, more resilient future.**
+
+## 🛰️ Live fire data: NASA FIRMS
+
+`backend/ingestion` downloads one day of global VIIRS (`VIIRS_SNPP_NRT`) hotspots from NASA FIRMS:
+
+1. `data_availability` endpoint first, to find the newest available date;
+2. `area` endpoint for that date (CSV, streamed row by row; usually 50,000+ rows).
+
+Up to five map keys (`FIRMS_MAP_KEYS1` … `FIRMS_MAP_KEYS5`) are tried in order; a key that errors or has no data
+falls through to the next. Each record keeps only latitude, longitude, date, time and confidence and is saved to
+`data/firms_hotspots.json`.
+
+`app.py` starts a background refresh on launch (fetch if the file is missing or older than 24 h, then every 24 h),
+groups the hotspots into the densest clusters worldwide and lists them under **Country: Live NASA FIRMS**. These
+clusters run through the app's fallback dispersion; the Random Forest plume model only covers the fires it was
+trained on (Quebec).
+
+```bash
+cp backend/ingestion/.env.example backend/ingestion/.env   # then paste your keys; never commit this file
+cd backend && python -m ingestion.cli --once                # one fetch now
+cd backend && python -m ingestion.cli                        # fetch every 24 h
+python -m pytest backend/ingestion/tests                     # from backend/: python -m pytest ingestion/tests
+```
+
+See `backend/ingestion/README.md` for details.

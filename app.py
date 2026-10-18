@@ -9,6 +9,7 @@ from folium.plugins import HeatMap
 from streamlit_folium import st_folium
 from streamlit_js_eval import get_geolocation, streamlit_js_eval
 
+from firms_live import FIRMS_JSON, LIVE_COUNTRY, in_box, live_fires, load_hotspots, start_refresh_thread
 from plume import ALERT_UGM3, HEAT_GRADIENT, HORIZON_H, PlumeEngine, LAYERS, LAYER_STYLE
 
 st.set_page_config(page_title="Wildfire & Smog Intelligence Platform", layout="wide")
@@ -60,7 +61,7 @@ header[data-testid="stHeader"], footer { display:none; }
 .panel h4 { font-size:.78rem; text-transform:uppercase; letter-spacing:.08em; color:var(--mute);
             border-bottom:1px solid var(--line); padding-bottom:3px; margin:10px 0 4px 0; }
 .panel ul { margin:0 0 0 1.1rem; padding:0; font-size:.84rem; } .panel li { margin-bottom:3px; }
-.sys { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-top:6px; }
+.sys { display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; margin-top:6px; }
 .sys .card { border-top-width:2px; padding:5px 10px; } .sys .v { font-size:1rem; }
 /* hide the helper iframes (geolocation / permission probes); they still run */
 [data-testid="stElementContainer"]:has(iframe[title^="streamlit_js_eval"]) { display:none; }
@@ -107,6 +108,18 @@ except Exception as e:
     st.stop()
 
 META = load_meta(eng.data_dir) if eng.data_dir else {}
+
+# ---------- NASA FIRMS live hotspots (backend/ingestion writes data/firms_hotspots.json) ----------
+@st.cache_resource
+def firms_refresh():
+    return start_refresh_thread()  # once per server process: fetch if >24 h old, then every 24 h
+
+@st.cache_data
+def firms_data(mtime):  # keyed on file mtime, so a refreshed file is picked up on the next rerun
+    return load_hotspots()
+
+FIRMS_REFRESH = firms_refresh()
+HOTSPOTS, FIRMS_DATE = firms_data(FIRMS_JSON.stat().st_mtime if FIRMS_JSON.exists() else 0)
 
 # ---------- Helper definitions ----------
 def aqi_label(pm):
@@ -189,8 +202,33 @@ FIRES = [
          avoid="Grizzly Peak Boulevard", nearby="Kensington Heights"),
 ]
 
+COUNTRIES = {  # country-level map view
+    "United States": dict(center=(39.5, -98.5), zoom=4),
+    "Canada": dict(center=(56.0, -96.0), zoom=3),
+    "Australia": dict(center=(-25.5, 134.0), zoom=4),
+}
+REGION_ZOOM = 11  # county / province view
+# Rough (south, west, north, east) boxes: drawn as the region outline and used to validate manual clicks.
+BOUNDS = {
+    "United States": (24.5, -125.0, 49.5, -66.9),
+    "Canada": (41.7, -141.0, 83.2, -52.6),
+    "Australia": (-43.7, 113.2, -10.6, 153.7),
+    "Quebec": (44.9, -79.8, 62.6, -57.1),
+    "California / San Francisco County": (37.708, -122.515, 37.833, -122.355),
+    "California / Alameda County": (37.45, -122.34, 37.91, -121.47),
+    "California / San Mateo County": (37.10, -122.52, 37.71, -122.08),
+    "British Columbia / Metro Vancouver Region": (49.0, -123.3, 49.5, -122.5),
+    "New South Wales / Blue Mountains Region": (-34.0, 150.0, -33.4, 150.6),
+}
+# Live FIRMS clusters become extra fires, grouped under their own country entry.
+_live, _live_bounds = live_fires(HOTSPOTS, FIRMS_DATE)
+if _live:  # densest clusters worldwide, each its own region under one "country"
+    FIRES += _live
+    BOUNDS.update(_live_bounds, **{LIVE_COUNTRY: (-60.0, -180.0, 75.0, 180.0)})
+    COUNTRIES[LIVE_COUNTRY] = dict(center=(20.0, 0.0), zoom=2)
+
 # A fire uses the ML engine only if the CSVs contain rows for its exact name.
-_unmatched = eng.unmatched_fires([f["name"] for f in FIRES])
+_unmatched = eng.unmatched_fires([f["name"] for f in FIRES if not f.get("live")])
 if _unmatched:
     print(f"[plume] No ML data for: {_unmatched}. Check Fire_Name values in the CSVs (re-run train_model.py).")
 
@@ -210,24 +248,6 @@ for f in FIRES:
         f["DIR"] = [f["walt"] if i > 12 else f["wdir"] for i in range(25)]
         f["eta"] = next((i for i, r in enumerate(f["RE"]) if r >= f["dist"]), None)
 
-COUNTRIES = {  # country-level map view
-    "United States": dict(center=(39.5, -98.5), zoom=4),
-    "Canada": dict(center=(56.0, -96.0), zoom=3),
-    "Australia": dict(center=(-25.5, 134.0), zoom=4),
-}
-REGION_ZOOM = 11  # county / province view
-# Rough (south, west, north, east) boxes: drawn as the region outline and used to validate manual clicks.
-BOUNDS = {
-    "United States": (24.5, -125.0, 49.5, -66.9),
-    "Canada": (41.7, -141.0, 83.2, -52.6),
-    "Australia": (-43.7, 113.2, -10.6, 153.7),
-    "Quebec": (44.9, -79.8, 62.6, -57.1),
-    "California / San Francisco County": (37.708, -122.515, 37.833, -122.355),
-    "California / Alameda County": (37.45, -122.34, 37.91, -121.47),
-    "California / San Mateo County": (37.10, -122.52, 37.71, -122.08),
-    "British Columbia / Metro Vancouver Region": (49.0, -123.3, 49.5, -122.5),
-    "New South Wales / Blue Mountains Region": (-34.0, 150.0, -33.4, 150.6),
-}
 REGION_COUNTRY = {x["region"]: x["country"] for x in FIRES}
 FIRE_BY_NAME = {f["name"]: f for f in FIRES}
 
@@ -514,7 +534,9 @@ elif selected:
     cards_html = (
         card("Active Monitoring Zone", fire["name"], f"Nearest of {len(scope)} active fire{'s' if len(scope) > 1 else ''}" if user else "Live Feed", "")
         + card("Predicted Fire Severity", f"{fire.get('score', '-')} / 100", f"{fire['sev']} - {fire['HA'][h]} Hectares (Hour {h})", fire["cls"])
-        + card("Prediction Confidence", f"{fire.get('conf', '-')}%", "Fallback estimate (no ML rows)", "")
+        + card("Prediction Confidence", f"{fire.get('conf', '-')}%",
+               f"NASA FIRMS detection confidence ({fire['detections']} hotspots, {fire['firms_date']})" if fire.get("live")
+               else "Fallback estimate (no ML rows)", "")
         + card("Air Quality Index", f"{fire['PM'][h]}", f"{label} - " + ("Alert Active" if h else "Baseline"), lcls)
     )
 else:
@@ -556,6 +578,12 @@ with left:
             fill=True, fill_opacity=0.04,
             tooltip=f"Boundary: {st.session_state.country if st.session_state.region == ALL else st.session_state.region}",
         ).add_to(m)
+
+    if selected:  # raw FIRMS detections inside the outlined area
+        _b = bounds_of(st.session_state.country, st.session_state.region)
+        for p in [p for p in HOTSPOTS if in_box(p["latitude"], p["longitude"], _b)][:1500]:  # cap keeps the map light
+            folium.CircleMarker((p["latitude"], p["longitude"]), radius=2, color="#ff6b00", weight=1, fill=True,
+                                fill_opacity=0.8, tooltip=f"FIRMS {p['date']} {p['time']} UTC, confidence {p['confidence']}").add_to(m)
 
     for x in FIRES:
         if x is fire: folium.CircleMarker(x["origin"], radius=22, color="#e03131", weight=3, fill=True, fill_opacity=0.12).add_to(m)
@@ -752,5 +780,7 @@ with rc:
         '<div class="sys">'
         + card("Backend", "LinuxONE Secure Container", f"Connected | {hw.get('architecture', 's390x')}", "")
         + card("Model", f"Random Forest ({hw.get('ml_backend', 'n/a')})", f"6h MAE {mm.get('MAE', 'n/a')} ug/m3 | {mm.get('MAE_improvement_vs_baseline_pct', 'n/a')}% vs persistence", "")
+        + card("NASA FIRMS", f"{len(HOTSPOTS):,} hotspots", f"VIIRS {FIRMS_DATE or 'no data yet'} | "
+               + ("auto-refresh 24 h" if FIRMS_REFRESH else "refresh off (no keys)"), "")
         + "</div>", unsafe_allow_html=True
     )

@@ -1,0 +1,7 @@
+streamlit
+streamlit-folium
+folium
+streamlit-js-eval
+pandas
+numpy
+requests

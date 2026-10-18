@@ -1,0 +1,9 @@
+# secrets
+.env
+# generated / local
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+data/firms_hotspots.json
+backend/data/
