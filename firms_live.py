@@ -7,6 +7,7 @@ through its fallback dispersion path; FIRMS gives position, size and detection c
 """
 import json
 import logging
+import os
 import sys
 import threading
 from collections import defaultdict
@@ -14,7 +15,7 @@ from math import cos, radians
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-FIRMS_JSON = ROOT / "data" / "firms_hotspots.json"
+FIRMS_JSON = Path(os.environ.get("FIRMS_JSON", ROOT / "data" / "firms_hotspots.json"))  # same var as train_model.py
 CONF_SCORE = {"l": 25.0, "n": 50.0, "h": 90.0}  # VIIRS low / nominal / high
 CELL_DEG = 0.1
 MIN_DETECTIONS = 3
