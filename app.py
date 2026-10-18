@@ -130,6 +130,39 @@ COUNTRIES = {  # country-level map view
     "Australia": dict(center=(-25.5, 134.0), zoom=4),
 }
 REGION_ZOOM = 11  # county / province view
+# Rough (south, west, north, east) boxes: drawn as the region outline and used to validate manual clicks.
+BOUNDS = {
+    "United States": (24.5, -125.0, 49.5, -66.9),
+    "Canada": (41.7, -141.0, 83.2, -52.6),
+    "Australia": (-43.7, 113.2, -10.6, 153.7),
+    "California / San Francisco County": (37.708, -122.515, 37.833, -122.355),
+    "California / Alameda County": (37.45, -122.34, 37.91, -121.47),
+    "California / San Mateo County": (37.10, -122.52, 37.71, -122.08),
+    "British Columbia / Metro Vancouver Region": (49.0, -123.3, 49.5, -122.5),
+    "New South Wales / Blue Mountains Region": (-34.0, 150.0, -33.4, 150.6),
+}
+REGION_COUNTRY = {x["region"]: x["country"] for x in FIRES}
+
+
+def in_bounds(pt, b):
+    return b[0] <= pt[0] <= b[2] and b[1] <= pt[1] <= b[3]
+
+
+def bounds_of(country, region):
+    return BOUNDS[country if region == ALL else region]
+
+
+def locate(pt):
+    """(country, region) containing the GPS fix; falls back to the country, then to the nearest fire's region."""
+    for r, c in REGION_COUNTRY.items():
+        if in_bounds(pt, BOUNDS[r]):
+            return c, r
+    for c in COUNTRIES:
+        if in_bounds(pt, BOUNDS[c]):
+            return c, ALL
+    n = min(FIRES, key=lambda x: km_between(pt, x["origin"]))
+    return n["country"], n["region"]
+
 FIRE_BY_NAME = {f["name"]: f for f in FIRES}
 
 
@@ -174,6 +207,9 @@ st.session_state.setdefault("view", "region")  # which dropdown last drove the m
 if "pending_fire" in st.session_state:  # set by a marker click; applied before the dropdowns are created
     _f = FIRE_BY_NAME[st.session_state.pop("pending_fire")]
     st.session_state.country, st.session_state.region = _f["country"], _f["region"]
+    _cl = st.session_state.get("click_loc")
+    if _cl and not in_bounds(_cl, BOUNDS[_f["region"]]):
+        st.session_state.pop("click_loc")
 st.session_state.setdefault("prev_sel", (st.session_state.country, st.session_state.region))
 if st.session_state.region not in regions_of(st.session_state.country):
     st.session_state.region = ALL
@@ -183,7 +219,16 @@ def reset_hour():
     st.session_state.hour = 0
 
 
-GATE_MSG = "Please allow location access or click any point on the map first to select regions."
+GATE_MSG = ("Please allow location access, or in manual mode click a point strictly within the selected "
+            "country/region (see the outlined boundary), before selecting regions.")
+
+
+def _drop_stale_click():
+    """Manual mode: a click outside the newly chosen country/region no longer counts as a location."""
+    cl = st.session_state.get("click_loc")
+    if cl and st.session_state.get("locsrc", "").startswith("Click") and not in_bounds(
+            cl, bounds_of(st.session_state.country, st.session_state.region)):
+        st.session_state.pop("click_loc")
 
 
 def _gated():
@@ -202,6 +247,7 @@ def on_country():
     st.session_state.region = ALL  # cascade: country-level view
     st.session_state.view = "country"
     st.session_state.fire_touched = True
+    _drop_stale_click()
 
 
 def on_region():
@@ -209,6 +255,7 @@ def on_region():
         return
     st.session_state.view = "country" if st.session_state.region == ALL else "region"
     st.session_state.fire_touched = True
+    _drop_stale_click()
 
 
 def aqi_label(pm):
@@ -345,6 +392,10 @@ with rc:
     user = click if src.startswith("Click") else gps
     geo_state = "pending" if src.startswith("Auto") and geo is None else "done"
     st.session_state.located = user is not None
+    locked = src.startswith("Auto") and user is not None  # live GPS: region follows the fix, manual changes are off
+    if locked:
+        st.session_state.country, st.session_state.region = locate(user)
+        st.session_state.view = "region"
     alert_slot = st.empty()  # filled after the map so a fresh click is already known
 
 # Fires in the selected region (or the whole country); the timeline drives all of them together.
@@ -366,14 +417,14 @@ cards_slot.markdown(
 with left:
     r1, r2, r3 = st.columns([3, 5, 5], vertical_alignment="center")
     r1.selectbox("Country", list(COUNTRIES), key="country", on_change=on_country,
-                 label_visibility="collapsed", format_func=lambda c: f"Country: {c}")
+                 label_visibility="collapsed", format_func=lambda c: f"Country: {c}", disabled=locked)
     r2.selectbox("County / Province / Region", regions_of(st.session_state.country), key="region", on_change=on_region,
-                 label_visibility="collapsed", format_func=lambda r: f"Region: {r}")
+                 label_visibility="collapsed", format_func=lambda r: f"Region: {r}", disabled=locked)
     st.session_state.prev_sel = (st.session_state.country, st.session_state.region)  # restore point for the gate
     mode = r3.radio("Map display mode", ["Wildfire Plume & Spread", "Air Quality (AQI) Heat Map"],
                     horizontal=True, label_visibility="collapsed", key="mode")
     # Open on the user's GPS fix until a dropdown is used; then country view or the selected region's fire
-    if src.startswith("Auto") and user and not st.session_state.get("fire_touched"):
+    if locked:
         center, zoom = user, REGION_ZOOM
     elif st.session_state.view == "country":
         center, zoom = COUNTRIES[st.session_state.country]["center"], COUNTRIES[st.session_state.country]["zoom"]
@@ -384,6 +435,12 @@ with left:
     m.get_root().header.add_child(
         folium.Element("<style>html,body{height:100%;margin:0;overflow:hidden}#map_div,#map_div2,.folium-map{height:100vh!important}</style>")
     )
+    sw_ne = bounds_of(st.session_state.country, st.session_state.region)
+    folium.Rectangle(
+        [[sw_ne[0], sw_ne[1]], [sw_ne[2], sw_ne[3]]], color="#4a6fa5", weight=3, dash_array="10 8",
+        fill=True, fill_opacity=0.04,
+        tooltip=f"Boundary: {st.session_state.country if st.session_state.region == ALL else st.session_state.region}",
+    ).add_to(m)
     for x in FIRES:
         sel = x is fire
         if sel:
@@ -416,18 +473,28 @@ with left:
     tt = res.get("last_object_clicked_tooltip")
     if tt in FIRE_BY_NAME and tt != st.session_state.get("last_tt"):  # new marker click
         st.session_state.last_tt = tt
-        if FIRE_BY_NAME[tt] not in scope:
+        if not locked and FIRE_BY_NAME[tt] not in scope:  # GPS lock ignores marker selection too
             st.session_state.pending_fire = tt
             st.session_state.view = "region"
             st.session_state.fire_touched = True
             st.rerun()
     c = res.get("last_clicked")
-    if c and src.startswith("Click") and (c["lat"], c["lng"]) != st.session_state.get("click_loc"):
-        st.session_state.click_loc = (c["lat"], c["lng"])
-        st.rerun()
+    c = (c["lat"], c["lng"]) if c else None
+    if c and c != st.session_state.get("last_click"):  # each click is handled once
+        st.session_state.last_click = c
+        if src.startswith("Click"):  # in Auto mode map clicks are ignored
+            if in_bounds(c, bounds_of(st.session_state.country, st.session_state.region)):
+                st.session_state.click_loc = c
+                st.rerun()
+            st.session_state.oob = True
+            st.toast("That point is outside the selected boundary.")
 
 acls, icon, atitle, abody = location_alert(user, h, geo_state, fire)
-if user is None and st.session_state.get("gate_warn"):
+if st.session_state.pop("oob", False):
+    _n = st.session_state.country if st.session_state.region == ALL else st.session_state.region
+    acls, icon, atitle, abody = "warn", "!", "Outside Selected Region", (
+        f"Click a point strictly within {_n}: stay inside the dashed outline on the map.")
+elif user is None and st.session_state.get("gate_warn"):
     acls, icon, atitle, abody = "warn", "!", "Location Required", GATE_MSG
 elif user is not None:
     st.session_state.gate_warn = False
